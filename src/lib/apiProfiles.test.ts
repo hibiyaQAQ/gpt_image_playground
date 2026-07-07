@@ -5,8 +5,12 @@ import {
   DEFAULT_IMAGES_MODEL,
   DEFAULT_OPENAI_PROFILE_ID,
   DEFAULT_SETTINGS,
+  DEFAULT_URL_IMAGE_BASE_URL,
+  DEFAULT_URL_IMAGE_PROFILE_ID,
+  DEFAULT_URL_IMAGE_PROVIDER_ID,
   createDefaultOpenAIProfile,
   createDefaultFalProfile,
+  ensureDefaultUrlImageSettings,
   getActiveApiProfile,
   findEquivalentApiProfile,
   importCustomProviderDefinitionFromJson,
@@ -42,6 +46,45 @@ describe('validateApiProfile', () => {
 })
 
 describe('default API URL env', () => {
+  it('includes the URL-only image edit provider as a default option', () => {
+    expect(DEFAULT_SETTINGS.activeProfileId).toBe(DEFAULT_OPENAI_PROFILE_ID)
+    expect(DEFAULT_SETTINGS.customProviders.find((provider) => provider.id === DEFAULT_URL_IMAGE_PROVIDER_ID)).toMatchObject({
+      name: 'URL 图生图',
+      submit: {
+        path: 'images/edits',
+        contentType: 'json',
+        body: {
+          images: '$inputImages.imageUrlObjects',
+          prompt: '$prompt',
+          model: '$profile.model',
+        },
+      },
+    })
+    expect(DEFAULT_SETTINGS.profiles.find((profile) => profile.id === DEFAULT_URL_IMAGE_PROFILE_ID)).toMatchObject({
+      provider: DEFAULT_URL_IMAGE_PROVIDER_ID,
+      baseUrl: DEFAULT_URL_IMAGE_BASE_URL,
+      model: DEFAULT_IMAGES_MODEL,
+      apiMode: 'images',
+    })
+  })
+
+  it('adds the URL-only image edit defaults to older persisted settings without switching profiles', () => {
+    const settings = ensureDefaultUrlImageSettings({
+      profiles: [createDefaultOpenAIProfile({
+        id: 'existing-openai',
+        apiKey: 'existing-key',
+      })],
+      activeProfileId: 'existing-openai',
+    })
+
+    expect(settings.activeProfileId).toBe('existing-openai')
+    expect(settings.customProviders.find((provider) => provider.id === DEFAULT_URL_IMAGE_PROVIDER_ID)).toBeTruthy()
+    expect(settings.profiles.find((profile) => profile.id === DEFAULT_URL_IMAGE_PROFILE_ID)).toMatchObject({
+      provider: DEFAULT_URL_IMAGE_PROVIDER_ID,
+      baseUrl: DEFAULT_URL_IMAGE_BASE_URL,
+    })
+  })
+
   it('applies shared URL params from VITE_DEFAULT_API_URL to the default profile', async () => {
     vi.resetModules()
     vi.stubEnv('VITE_DEFAULT_API_URL', 'https://app.example.com/?apiUrl=https%3A%2F%2Fapi.example.com&apiMode=images&model=test-image-model&profileName=URL%20Profile&codexCli=true&streamImages=true&streamPartialImages=3')
@@ -352,6 +395,8 @@ describe('mergeImportedSettings', () => {
         name: 'Existing Provider',
         submit: { path: 'images/generations' },
       }],
+      profiles: [DEFAULT_SETTINGS.profiles[0]],
+      activeProfileId: DEFAULT_OPENAI_PROFILE_ID,
     })
     const merged = mergeImportedSettings(current, {
       customProviders: [{

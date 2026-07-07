@@ -1,5 +1,6 @@
 import type { AppSettings, TaskParams } from '../types'
 import { blobToDataUrl } from './dataUrl'
+import { getImageProxyUrl } from './imageProxy'
 
 export const MIME_MAP: Record<string, string> = {
   png: 'image/png',
@@ -16,6 +17,7 @@ export interface CallApiOptions {
   params: TaskParams
   /** 输入图片的 data URL 列表 */
   inputImageDataUrls: string[]
+  inputImageUrls?: string[]
   maskDataUrl?: string
   onFalRequestEnqueued?: (request: { requestId: string; endpoint: string }) => void
   onCustomTaskEnqueued?: (task: { taskId: string }) => void
@@ -126,14 +128,18 @@ async function probeNoCorsReachability(url: string, timeoutMs = 8000): Promise<'
 export async function fetchImageUrlAsDataUrl(url: string, fallbackMime: string, signal?: AbortSignal): Promise<string> {
   if (isDataUrl(url)) return url
 
+  const requestUrl = isHttpUrl(url) ? getImageProxyUrl(url) : url
   let response: Response
   try {
-    response = await fetch(url, {
+    response = await fetch(requestUrl, {
       cache: 'no-store',
       signal,
     })
   } catch (err) {
     if (err instanceof TypeError) {
+      if (requestUrl !== url) {
+        throw new Error('图片代理请求失败，请确认应用后端的 /api/image-proxy 已启用并配置了允许的图片域名')
+      }
       const probe = await probeNoCorsReachability(url)
       if (probe === 'opaque') {
         throw new Error(`图片已生成，但因服务商未允许跨域，图片链接下载失败。${IMAGE_FETCH_CORS_HINT}`)
@@ -147,7 +153,13 @@ export async function fetchImageUrlAsDataUrl(url: string, fallbackMime: string, 
   }
 
   if (!response.ok) {
-    throw new Error(`图片 URL 下载失败：HTTP ${response.status}`)
+    let detail = ''
+    try {
+      detail = await response.text()
+    } catch {
+      /* ignore */
+    }
+    throw new Error(`图片 URL 下载失败：HTTP ${response.status}${detail ? ` ${detail.slice(0, 200)}` : ''}`)
   }
 
   const blob = await response.blob()

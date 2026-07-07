@@ -27,7 +27,7 @@ describe('URL settings params', () => {
       ...buildSettingsFromUrlParams(current, new URLSearchParams('apiUrl=https://api.example.com/v1&apiKey=test-key')),
     })
 
-    expect(next.profiles).toHaveLength(2)
+    expect(next.profiles).toHaveLength(3)
     expect(next.activeProfileId).not.toBe(current.activeProfileId)
     expect(next.profiles.find((profile) => profile.id === next.activeProfileId)).toMatchObject({
       name: 'URL 参数配置',

@@ -179,6 +179,8 @@
 
 **配置默认 API URL**：在 Vercel 项目的 **Settings → Environment Variables** 中添加 `VITE_DEFAULT_API_URL`（如 `https://api.openai.com/v1`），然后重新部署即可生效。
 
+**配置图片代理 allowlist**：若需要使用远程图片 URL 作为参考图，Vercel Serverless 会提供同源 `/api/image-proxy?url=...` 图片代理。请在 **Settings → Environment Variables** 中添加 `IMAGE_PROXY_ALLOWED_HOSTS`（如 `r22.hibiya.ccwu.cc,*.example.com`），可选添加 `IMAGE_PROXY_MAX_BYTES`（默认 `20971520`）和 `IMAGE_PROXY_TIMEOUT_MS`（默认 `10000`）。
+
 **携带默认配置参数**：`VITE_DEFAULT_API_URL` 支持通过 URL 查询参数预设默认配置，可用参数参考下方的：“URL 传参快速填充”：`apiUrl`、`apiKey`、`apiMode`、`model`、`profileName`、`codexCli`、`streamImages`、`streamPartialImages`。
 
 **导入自定义服务商配置**：`VITE_DEFAULT_API_URL` 除了填写普通 API 地址外，也支持直接填写 `.json` 配置 URL 或带 `settings` 参数的分享 URL。设为配置 URL 时，页面启动后会自动导入其中的自定义服务商和 API 配置。
@@ -218,6 +220,8 @@ npm run deploy:cf
 部署脚本会先执行 `npm run build`，再通过 `wrangler deploy` 上传 `dist/` 目录。
 
 **配置默认 API URL**：Cloudflare Workers 的环境变量不会自动改写已经构建好的静态文件。若需预设默认 API 地址，请在构建前设置 `VITE_DEFAULT_API_URL` 后再部署。
+
+**配置图片代理 allowlist**：Cloudflare Workers 部署会提供同源 `/api/image-proxy?url=...` 图片代理。请在 Worker 的 Variables 中设置 `IMAGE_PROXY_ALLOWED_HOSTS`（如 `r22.hibiya.ccwu.cc,*.example.com`），可选设置 `IMAGE_PROXY_MAX_BYTES`（默认 `20971520`）和 `IMAGE_PROXY_TIMEOUT_MS`（默认 `10000`）。
 
 ```bash
 VITE_DEFAULT_API_URL=https://api.openai.com/v1 npm run deploy:cf
@@ -330,6 +334,8 @@ services:
 **1. 环境准备与启动**
 
 你可以在项目根目录新建 `.env.local` 文件配置默认 API URL（如 `VITE_DEFAULT_API_URL=https://api.openai.com/v1`）。然后安装依赖并启动：
+
+本地开发服务器内置同源 `/api/image-proxy?url=...` 图片代理，用于加载远程图片 URL。开发环境未设置 `IMAGE_PROXY_ALLOWED_HOSTS` 时默认允许公网图片域名；如需收紧范围，可在启动前设置 `IMAGE_PROXY_ALLOWED_HOSTS`，并可设置 `IMAGE_PROXY_MAX_BYTES`、`IMAGE_PROXY_TIMEOUT_MS`。
 
 **携带默认配置参数**：`VITE_DEFAULT_API_URL` 支持通过 URL 查询参数预设默认配置，可用参数参考下方的：“URL 传参快速填充”：`apiUrl`、`apiKey`、`apiMode`、`model`、`profileName`、`codexCli`、`streamImages`、`streamPartialImages`。
 

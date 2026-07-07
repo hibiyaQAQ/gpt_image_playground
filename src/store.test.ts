@@ -60,17 +60,17 @@ vi.mock('./lib/db', () => {
       images.clear()
       thumbnails.clear()
     },
-    storeImage: async (dataUrl: string, source: StoredImage['source'] = 'upload') => {
+    storeImage: async (dataUrl: string, source: StoredImage['source'] = 'upload', sourceUrl?: string) => {
       const id = `stored-image-${++imageSeq}`
-      images.set(id, { id, dataUrl, source, createdAt: Date.now() })
+      images.set(id, { id, dataUrl, source, sourceUrl, createdAt: Date.now() })
       return id
     },
-    storeImageWithSize: async (dataUrl: string, source: StoredImage['source'] = 'upload') => {
+    storeImageWithSize: async (dataUrl: string, source: StoredImage['source'] = 'upload', sourceUrl?: string) => {
       const id = `stored-image-${++imageSeq}`
       const size = dataUrl.match(/(\d+)x(\d+)/)
       const width = size ? Number(size[1]) : undefined
       const height = size ? Number(size[2]) : undefined
-      images.set(id, { id, dataUrl, source, createdAt: Date.now(), width, height })
+      images.set(id, { id, dataUrl, source, sourceUrl, createdAt: Date.now(), width, height })
       return { id, width, height }
     },
   }
@@ -131,7 +131,7 @@ import { clearAgentConversations, clearImages, clearTasks, getAllAgentConversati
 import { callAgentResponsesApi, callBatchImageSingle } from './lib/agentApi'
 import { getFalQueuedImageResult } from './lib/falAiImageApi'
 import { removeKeyedBackgroundFromDataUrl } from './lib/transparentImage'
-import { cleanStaleAgentInputDrafts, clearFailedTasks, deleteAgentRoundFromConversation, deleteFavoriteCollection, editOutputs, getActiveAgentRounds, getAgentConversationTaskIds, getAgentRoundTaskIds, getErrorToastMessage, getPersistedState, getTaskApiProfile, importData, initStore, markInterruptedOpenAIRunningTasks, migratePersistedState, regenerateAgentAssistantMessage, remapAgentRoundMentionsForPathChange, removeTask, reuseConfig, stopAgentResponse, submitAgentMessage, submitTask, taskMatchesFilterStatus, taskMatchesSearchQuery, useStore } from './store'
+import { addImageFromUrl, cleanStaleAgentInputDrafts, clearFailedTasks, deleteAgentRoundFromConversation, deleteFavoriteCollection, editOutputs, getActiveAgentRounds, getAgentConversationTaskIds, getAgentRoundTaskIds, getErrorToastMessage, getPersistedState, getTaskApiProfile, importData, initStore, markInterruptedOpenAIRunningTasks, migratePersistedState, regenerateAgentAssistantMessage, remapAgentRoundMentionsForPathChange, removeTask, reuseConfig, stopAgentResponse, submitAgentMessage, submitTask, taskMatchesFilterStatus, taskMatchesSearchQuery, useStore } from './store'
 
 const imageA = { id: 'image-a', dataUrl: 'data:image/png;base64,a' }
 const imageB = { id: 'image-b', dataUrl: 'data:image/png;base64,b' }
@@ -182,6 +182,32 @@ function importFile(data: ExportData): File {
   const buffer = zipped.buffer.slice(zipped.byteOffset, zipped.byteOffset + zipped.byteLength)
   return { arrayBuffer: async () => buffer } as File
 }
+
+describe('remote image URL inputs', () => {
+  beforeEach(async () => {
+    await clearImages()
+    useStore.setState({
+      inputImages: [],
+      showToast: vi.fn(),
+    })
+  })
+
+  it('stores the proxy URL for display and keeps the original source URL', async () => {
+    const src = 'https://cdn.example.com/ref.png'
+
+    await addImageFromUrl(src)
+
+    const image = useStore.getState().inputImages[0]!
+    expect(image).toMatchObject({
+      dataUrl: '/api/image-proxy?url=https%3A%2F%2Fcdn.example.com%2Fref.png',
+      sourceUrl: src,
+    })
+    await expect(getImage(image.id)).resolves.toMatchObject({
+      dataUrl: image.dataUrl,
+      sourceUrl: src,
+    })
+  })
+})
 
 describe('favorite collection deletion', () => {
   const collectionA = { id: 'collection-a', name: '收藏夹 A', createdAt: 1, updatedAt: 1 }
@@ -293,6 +319,30 @@ describe('mask draft lifecycle in store actions', () => {
     const state = useStore.getState()
     expect(state.tasks).toHaveLength(1)
     expect(state.showToast).toHaveBeenCalledWith('任务已提交', 'success')
+  })
+
+  it('passes source URLs for input images to image API calls', async () => {
+    const { callImageApi } = await import('./lib/api')
+    vi.mocked(callImageApi).mockClear()
+    vi.mocked(callImageApi).mockResolvedValueOnce({
+      images: ['data:image/png;base64,generated'],
+      actualParams: {},
+      actualParamsList: [{}],
+      revisedPrompts: [],
+    })
+    useStore.setState({
+      inputImages: [{ ...imageA, sourceUrl: 'https://cdn.example.com/input-a.png' }],
+    })
+
+    await submitTask()
+    for (let i = 0; i < 5; i += 1) await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(vi.mocked(callImageApi).mock.calls[0][0]).toMatchObject({
+      inputImageDataUrls: [imageA.dataUrl],
+      inputImageUrls: ['https://cdn.example.com/input-a.png'],
+    })
+    await clearTasks()
+    await clearImages()
   })
 
   it('stores decoded image size as actual size when the API omits size', async () => {

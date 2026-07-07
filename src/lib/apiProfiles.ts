@@ -34,6 +34,9 @@ export const DEFAULT_RESPONSES_MODEL = 'gpt-5.5'
 export const DEFAULT_FAL_BASE_URL = 'https://fal.run'
 export const DEFAULT_FAL_MODEL = 'openai/gpt-image-2'
 export const DEFAULT_OPENAI_PROFILE_ID = 'default-openai'
+export const DEFAULT_URL_IMAGE_PROVIDER_ID = 'custom-url-image-edits'
+export const DEFAULT_URL_IMAGE_PROFILE_ID = 'profile-url-image-edits'
+export const DEFAULT_URL_IMAGE_BASE_URL = 'https://stellar-quokka-2fdb2f.netlify.app/.netlify/ai/v1'
 export const DEFAULT_API_TIMEOUT = 600
 
 const BUILT_IN_PROVIDER_IDS = new Set<ApiProvider>(['openai', 'fal'])
@@ -53,6 +56,18 @@ const DEFAULT_GENERATE_BODY = {
   n: '$params.n',
 }
 const DEFAULT_EDIT_BODY = DEFAULT_GENERATE_BODY
+const DEFAULT_URL_IMAGE_BODY = {
+  images: '$inputImages.imageUrlObjects',
+  prompt: '$prompt',
+  n: '$params.n',
+  size: '$params.size',
+  model: '$profile.model',
+  quality: '$params.quality',
+  background: '$params.background',
+  output_format: '$params.output_format',
+  moderation: '$params.moderation',
+  output_compression: '$params.output_compression',
+}
 const DEFAULT_OPENAI_RESULT: CustomProviderResultMapping = {
   imageUrlPaths: ['data.*.url'],
   b64JsonPaths: ['data.*.b64_json'],
@@ -354,6 +369,46 @@ export function createDefaultFalProfile(overrides: Partial<ApiProfile> = {}): Ap
   }
 }
 
+export function createDefaultUrlImageProvider(): CustomProviderDefinition {
+  return {
+    id: DEFAULT_URL_IMAGE_PROVIDER_ID,
+    name: 'URL 图生图',
+    template: 'http-image',
+    submit: {
+      path: 'images/edits',
+      method: 'POST',
+      contentType: 'json',
+      body: DEFAULT_URL_IMAGE_BODY,
+      result: DEFAULT_OPENAI_RESULT,
+    },
+    editSubmit: {
+      path: 'images/edits',
+      method: 'POST',
+      contentType: 'json',
+      body: DEFAULT_URL_IMAGE_BODY,
+      result: DEFAULT_OPENAI_RESULT,
+    },
+  }
+}
+
+export function createDefaultUrlImageProfile(overrides: Partial<ApiProfile> = {}): ApiProfile {
+  return {
+    id: DEFAULT_URL_IMAGE_PROFILE_ID,
+    name: 'URL 图生图',
+    provider: DEFAULT_URL_IMAGE_PROVIDER_ID,
+    baseUrl: DEFAULT_URL_IMAGE_BASE_URL,
+    apiKey: '',
+    model: DEFAULT_IMAGES_MODEL,
+    timeout: DEFAULT_API_TIMEOUT,
+    apiMode: 'images',
+    codexCli: false,
+    apiProxy: false,
+    streamImages: false,
+    streamPartialImages: DEFAULT_STREAM_PARTIAL_IMAGES,
+    ...overrides,
+  }
+}
+
 export function switchApiProfileProvider(profile: ApiProfile, provider: ApiProvider, customProvider?: CustomProviderDefinition): ApiProfile {
   const providerDrafts = {
     ...profile.providerDrafts,
@@ -569,6 +624,22 @@ export function normalizeSettings(input: Partial<AppSettings> | unknown): AppSet
   }
 }
 
+export function ensureDefaultUrlImageSettings(input: Partial<AppSettings> | unknown): AppSettings {
+  const settings = normalizeSettings(input)
+  const customProviders = settings.customProviders.some((provider) => provider.id === DEFAULT_URL_IMAGE_PROVIDER_ID)
+    ? settings.customProviders
+    : [...settings.customProviders, createDefaultUrlImageProvider()]
+  const profiles = settings.profiles.some((profile) => profile.id === DEFAULT_URL_IMAGE_PROFILE_ID)
+    ? settings.profiles
+    : [...settings.profiles, createDefaultUrlImageProfile()]
+  return normalizeSettings({
+    ...settings,
+    customProviders,
+    profiles,
+    activeProfileId: settings.activeProfileId,
+  })
+}
+
 export function getAgentTextApiProfile(settings: Partial<AppSettings> | unknown): ApiProfile | null {
   const normalized = normalizeSettings(settings)
   if (normalized.agentApiConfigMode === 'off') return getActiveApiProfile(normalized)
@@ -702,10 +773,29 @@ function isDefaultOpenAIProfile(profile: ApiProfile): boolean {
 }
 
 function hasOnlyDefaultProfiles(settings: AppSettings): boolean {
-  return settings.customProviders.length === 0 &&
-    settings.profiles.length === 1 &&
+  const openaiProfile = settings.profiles.find((profile) => profile.id === DEFAULT_OPENAI_PROFILE_ID)
+  const urlProfile = settings.profiles.find((profile) => profile.id === DEFAULT_URL_IMAGE_PROFILE_ID)
+  return settings.customProviders.length === 1 &&
+    settings.customProviders[0].id === DEFAULT_URL_IMAGE_PROVIDER_ID &&
+    settings.profiles.length === 2 &&
     settings.activeProfileId === DEFAULT_OPENAI_PROFILE_ID &&
-    isDefaultOpenAIProfile(settings.profiles[0])
+    Boolean(openaiProfile && isDefaultOpenAIProfile(openaiProfile)) &&
+    Boolean(urlProfile && isDefaultUrlImageProfile(urlProfile))
+}
+
+function isDefaultUrlImageProfile(profile: ApiProfile): boolean {
+  return profile.id === DEFAULT_URL_IMAGE_PROFILE_ID &&
+    profile.name === 'URL 图生图' &&
+    profile.provider === DEFAULT_URL_IMAGE_PROVIDER_ID &&
+    profile.baseUrl === DEFAULT_URL_IMAGE_BASE_URL &&
+    profile.apiKey === '' &&
+    profile.model === DEFAULT_IMAGES_MODEL &&
+    profile.timeout === DEFAULT_API_TIMEOUT &&
+    profile.apiMode === 'images' &&
+    profile.codexCli === false &&
+    profile.apiProxy === false &&
+    profile.streamImages === false &&
+    profile.streamPartialImages === DEFAULT_STREAM_PARTIAL_IMAGES
 }
 
 function createImportedProfileId(provider: ApiProvider, usedIds: Set<string>): string {
@@ -855,7 +945,12 @@ export const DEFAULT_SETTINGS: AppSettings = normalizeSettings({
   apiProxy: DEFAULT_OPENAI_API_PROXY,
   streamImages: DEFAULT_API_URL_PATCH?.streamImages ?? getDefaultStreamImages('openai', DEFAULT_API_URL_PATCH?.apiMode ?? 'images'),
   streamPartialImages: DEFAULT_API_URL_PATCH?.streamPartialImages ?? DEFAULT_STREAM_PARTIAL_IMAGES,
-  customProviders: [],
+  customProviders: [createDefaultUrlImageProvider()],
+  profiles: [
+    createDefaultOpenAIProfile(),
+    createDefaultUrlImageProfile(),
+  ],
+  activeProfileId: DEFAULT_OPENAI_PROFILE_ID,
   clearInputAfterSubmit: false,
   persistInputOnRestart: true,
   reuseTaskApiProfileTemporarily: false,

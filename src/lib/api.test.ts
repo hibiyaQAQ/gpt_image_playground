@@ -680,6 +680,138 @@ describe('callImageApi', () => {
     )
   })
 
+  it('renders custom provider input images as image_url objects', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      data: [{ b64_json: 'aW1hZ2U=' }],
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+
+    await callImageApi({
+      settings: {
+        ...DEFAULT_SETTINGS,
+        baseUrl: 'https://api.example.com/v1',
+        apiKey: 'test-key',
+        model: 'model',
+        customProviders: [{
+          id: 'custom-url-images',
+          name: 'Custom URL Images',
+          template: 'http-image',
+          submit: {
+            path: 'images/edits',
+            method: 'POST',
+            contentType: 'json',
+            body: {
+              model: '$profile.model',
+              prompt: '$prompt',
+              images: '$inputImages.imageUrlObjects',
+              n: '$params.n',
+            },
+            result: { b64JsonPaths: ['data.*.b64_json'] },
+          },
+        }],
+        profiles: [{
+          ...DEFAULT_SETTINGS.profiles[0],
+          id: 'profile-custom-url-images',
+          provider: 'custom-url-images',
+          baseUrl: 'https://api.example.com/v1',
+          apiKey: 'test-key',
+          model: 'model',
+        }],
+        activeProfileId: 'profile-custom-url-images',
+      },
+      prompt: 'prompt',
+      params: { ...DEFAULT_PARAMS },
+      inputImageDataUrls: ['data:image/png;base64,cmVm'],
+      inputImageUrls: ['https://cdn.example.com/ref.png'],
+    })
+
+    const [, init] = fetchMock.mock.calls[0]
+    const body = JSON.parse(String((init as RequestInit).body))
+    expect(body).toMatchObject({
+      model: 'model',
+      prompt: 'prompt',
+      images: [{ image_url: 'https://cdn.example.com/ref.png' }],
+      n: 1,
+    })
+  })
+
+  it('uses original source URLs for Responses input images', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      output: [{
+        type: 'image_generation_call',
+        result: 'aW1hZ2U=',
+      }],
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+
+    await callImageApi({
+      settings: {
+        ...DEFAULT_SETTINGS,
+        apiKey: 'test-key',
+        apiMode: 'responses',
+        profiles: DEFAULT_SETTINGS.profiles.map((profile) => ({
+          ...profile,
+          apiKey: 'test-key',
+          apiMode: 'responses',
+        })),
+      },
+      prompt: 'prompt',
+      params: { ...DEFAULT_PARAMS },
+      inputImageDataUrls: ['/api/image-proxy?url=https%3A%2F%2Fcdn.example.com%2Fref.png'],
+      inputImageUrls: ['https://cdn.example.com/ref.png'],
+    })
+
+    const [, init] = fetchMock.mock.calls[0]
+    const body = JSON.parse(String((init as RequestInit).body))
+    expect(body.input[0].content[1]).toEqual({
+      type: 'input_image',
+      image_url: 'https://cdn.example.com/ref.png',
+    })
+  })
+
+  it('rejects custom provider URL image templates when an input image has no source URL', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+
+    await expect(callImageApi({
+      settings: {
+        ...DEFAULT_SETTINGS,
+        customProviders: [{
+          id: 'custom-url-images',
+          name: 'Custom URL Images',
+          template: 'http-image',
+          submit: {
+            path: 'images/edits',
+            method: 'POST',
+            contentType: 'json',
+            body: {
+              prompt: '$prompt',
+              images: '$inputImages.imageUrlObjects',
+            },
+            result: { b64JsonPaths: ['data.*.b64_json'] },
+          },
+        }],
+        profiles: [{
+          ...DEFAULT_SETTINGS.profiles[0],
+          id: 'profile-custom-url-images',
+          provider: 'custom-url-images',
+          baseUrl: 'https://api.example.com/v1',
+          apiKey: 'test-key',
+          model: 'model',
+        }],
+        activeProfileId: 'profile-custom-url-images',
+      },
+      prompt: 'prompt',
+      params: { ...DEFAULT_PARAMS },
+      inputImageDataUrls: ['data:image/png;base64,cmVm'],
+    })).rejects.toThrow('需要参考图 HTTP URL')
+
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
   it('rejects API proxy for async custom providers', async () => {
     vi.stubEnv('VITE_API_PROXY_AVAILABLE', 'true')
     const fetchMock = vi.spyOn(globalThis, 'fetch')

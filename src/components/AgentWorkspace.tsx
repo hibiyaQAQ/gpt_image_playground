@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, useRef, useCallback, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import type { AgentConversation, AgentMessage, AgentRound, ResponsesOutputItem, TaskRecord } from '../types'
-import { deleteAgentRoundFromConversation, editOutputs, getActiveAgentRounds, getAgentBranchLeafId, getAgentRoundTaskIds, getAgentSiblingRounds, getCachedImage, ensureImageCached, regenerateAgentAssistantMessage, remapAgentRoundMentionsForPathChange, removeMultipleTasks, removeTask, reuseConfig, useStore } from '../store'
+import { deleteAgentRoundFromConversation, editOutputs, getActiveAgentRounds, getAgentBranchLeafId, getAgentRoundTaskIds, getAgentSiblingRounds, getCachedImage, ensureImageCached, ensureInputImageCached, regenerateAgentAssistantMessage, remapAgentRoundMentionsForPathChange, removeMultipleTasks, removeTask, reuseConfig, useStore } from '../store'
 import { getPromptMentionParts } from '../lib/promptImageMentions'
 import { copyTextToClipboard, getClipboardFailureMessage } from '../lib/clipboard'
 import { collectWebSearchCalls, getAgentRoundOutputItems, getWebSearchStatusForCalls, type AgentWebSearchStatus } from '../lib/agentWebSearch'
@@ -744,14 +744,12 @@ export default function AgentWorkspace() {
     clearMaskDraft()
 
     const inputImages = await Promise.all(
-      round.inputImageIds.map(async (id) => ({
-        id,
-        dataUrl: await ensureImageCached(id) || '',
-      })),
+      round.inputImageIds.map(async (id) => ensureInputImageCached(id)),
     )
-    setInputImages(inputImages)
+    const restoredInputImages = inputImages.filter((image): image is NonNullable<typeof image> => Boolean(image))
+    setInputImages(restoredInputImages)
     const maskTargetImageId = round.maskTargetImageId ?? (round.maskImageId ? round.inputImageIds[0] : null)
-    if (maskTargetImageId && round.maskImageId && inputImages.some((img) => img.id === maskTargetImageId)) {
+    if (maskTargetImageId && round.maskImageId && restoredInputImages.some((img) => img.id === maskTargetImageId)) {
       const maskDataUrl = await ensureImageCached(round.maskImageId)
       if (maskDataUrl) {
         setMaskDraft({

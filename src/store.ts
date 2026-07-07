@@ -11,13 +11,14 @@ import type {
   TaskParams,
   InputImage,
   MaskDraft,
+  StoredImage,
   TaskRecord,
   FavoriteCollection,
   ResponsesApiResponse,
   ResponsesOutputItem,
 } from './types'
 import { DEFAULT_AGENT_MAX_TOOL_ROUNDS, DEFAULT_PARAMS } from './types'
-import { DEFAULT_SETTINGS, getActiveApiProfile, getAgentImageApiProfile, getAgentTextApiProfile, getCustomProviderDefinition, mergeImportedSettings, normalizeSettings, validateApiProfile } from './lib/apiProfiles'
+import { DEFAULT_SETTINGS, ensureDefaultUrlImageSettings, getActiveApiProfile, getAgentImageApiProfile, getAgentTextApiProfile, getCustomProviderDefinition, mergeImportedSettings, normalizeSettings, validateApiProfile } from './lib/apiProfiles'
 import { dismissAllTooltips } from './lib/tooltipDismiss'
 import { remapImageMentionsForOrder, replaceImageMentionsForApi } from './lib/promptImageMentions'
 import {
@@ -45,7 +46,7 @@ import { callImageApi } from './lib/api'
 import { callAgentConversationTitleApi, callAgentResponsesApi, callBatchImageSingle, parseBatchImageCallArguments, type AgentApiResultImage } from './lib/agentApi'
 import { collectAgentRoundOutputImageSlots, extractAgentReferenceIds, getAgentCurrentReferenceId, getAgentGeneratedImageReferenceId, replaceAgentPromptImageReferencesForApi } from './lib/agentImageReferences'
 import { showBrowserNotification } from './lib/browserNotification'
-import { IMAGE_FETCH_CORS_HINT } from './lib/imageApiShared'
+import { IMAGE_FETCH_CORS_HINT, isHttpUrl } from './lib/imageApiShared'
 import { getFalErrorMessage, getFalQueuedImageResult } from './lib/falAiImageApi'
 import { getCustomQueuedImageResult } from './lib/openaiCompatibleImageApi'
 import { validateMaskMatchesImage } from './lib/canvasImage'
@@ -55,6 +56,7 @@ import { createTransparentOutputMeta, getTransparentRequestParams, removeKeyedBa
 import { blobToDataUrl, fileToDataUrl } from './lib/dataUrl'
 import { formatExportFileTime } from './lib/exportFileName'
 import { buildExportZip, readExportZip, readExportZipFileAsDataUrl } from './lib/exportZip'
+import { getImageProxyUrl } from './lib/imageProxy'
 
 export const ALL_FAVORITES_COLLECTION_ID = '__all_favorites__'
 export const DEFAULT_FAVORITE_COLLECTION_ID = '__default_favorites__'
@@ -189,10 +191,74 @@ export async function ensureImageCached(id: string): Promise<string | undefined>
   if (cached) return cached
   const rec = await getImage(id)
   if (rec) {
-    cacheImage(id, rec.dataUrl)
-    return rec.dataUrl
+    const dataUrl = getDisplayImageDataUrl(rec.dataUrl, rec.sourceUrl)
+    cacheImage(id, dataUrl)
+    return dataUrl
   }
   return undefined
+}
+
+export async function ensureInputImageCached(id: string): Promise<InputImage | null> {
+  return getApiInputImage(id)
+}
+
+function normalizeSourceUrl(value: unknown): string | undefined {
+  return isHttpUrl(value) ? value : undefined
+}
+
+function getDisplayImageDataUrl(dataUrl: string, sourceUrl?: string): string {
+  const normalizedSourceUrl = normalizeSourceUrl(sourceUrl) ?? normalizeSourceUrl(dataUrl)
+  if (normalizedSourceUrl && dataUrl === normalizedSourceUrl) return getImageProxyUrl(normalizedSourceUrl)
+  return dataUrl
+}
+
+function restoreInlineInputImageDataUrl(img: InputImage): InputImage {
+  const sourceUrl = normalizeSourceUrl(img.sourceUrl) ?? normalizeSourceUrl(img.dataUrl)
+  return {
+    ...img,
+    dataUrl: getDisplayImageDataUrl(img.dataUrl, sourceUrl),
+    ...(sourceUrl ? { sourceUrl } : {}),
+  }
+}
+
+function getPersistableInputImage(img: InputImage): InputImage {
+  const sourceUrl = normalizeSourceUrl(img.sourceUrl)
+  return {
+    id: img.id,
+    dataUrl: '',
+    ...(sourceUrl ? { sourceUrl } : {}),
+  }
+}
+
+function restoreInputImageDataUrl(img: InputImage, storedImage: StoredImage): InputImage {
+  const sourceUrl = normalizeSourceUrl(img.sourceUrl ?? storedImage.sourceUrl) ?? normalizeSourceUrl(storedImage.dataUrl)
+  return {
+    ...img,
+    dataUrl: getDisplayImageDataUrl(storedImage.dataUrl, sourceUrl),
+    ...(sourceUrl ? { sourceUrl } : {}),
+  }
+}
+
+async function getApiInputImage(id: string, fallbackImages: InputImage[] = useStore.getState().inputImages): Promise<InputImage | null> {
+  const fallback = fallbackImages.find((img) => img.id === id)
+  const cached = getCachedImage(id) ?? (fallback?.dataUrl || undefined)
+  const rec = await getImage(id)
+  const rawDataUrl = cached ?? rec?.dataUrl
+  const sourceUrl = normalizeSourceUrl(fallback?.sourceUrl) ?? normalizeSourceUrl(rec?.sourceUrl) ?? normalizeSourceUrl(rawDataUrl)
+  if (!rawDataUrl) return null
+  const dataUrl = getDisplayImageDataUrl(rawDataUrl, sourceUrl)
+  if (dataUrl !== cached) cacheImage(id, dataUrl)
+  return {
+    id,
+    dataUrl,
+    ...(sourceUrl ? { sourceUrl } : {}),
+  }
+}
+
+function getCompleteInputImageUrls(images: InputImage[]): string[] | undefined {
+  if (!images.length) return undefined
+  const urls = images.map((img) => normalizeSourceUrl(img.sourceUrl))
+  return urls.every((url): url is string => Boolean(url)) ? urls : undefined
 }
 
 export async function ensureImageThumbnailCached(id: string): Promise<{ dataUrl: string; width?: number; height?: number } | undefined> {
@@ -675,13 +741,13 @@ export function getPersistedState(state: AppState) {
     ...(settings.persistInputOnRestart && (state.appMode === 'gallery' || galleryInputDraft)
       ? {
           prompt: galleryInputDraft?.prompt ?? '',
-          inputImages: galleryInputDraft?.inputImages.map((img) => ({ id: img.id, dataUrl: '' })) ?? [],
+          inputImages: galleryInputDraft?.inputImages.map(getPersistableInputImage) ?? [],
         }
       : {}),
     dismissedCodexCliPrompts: state.dismissedCodexCliPrompts,
     appMode: state.appMode,
     galleryInputDraft: settings.persistInputOnRestart && galleryInputDraft
-      ? { ...galleryInputDraft, inputImages: galleryInputDraft.inputImages.map((img) => ({ id: img.id, dataUrl: '' })) }
+      ? { ...galleryInputDraft, inputImages: galleryInputDraft.inputImages.map(getPersistableInputImage) }
       : null,
     ...(agentConversationMigrationPending && !agentConversationPersistenceReady
       ? { agentConversations: getPersistableAgentConversations(state.agentConversations) }
@@ -711,7 +777,7 @@ function mergePersistedState(persistedState: unknown, currentState: AppState): A
   if (!persistedState || typeof persistedState !== 'object') return currentState
 
   const persisted = persistedState as Partial<AppState>
-  const settings = normalizeSettings(persisted.settings ?? currentState.settings)
+  const settings = ensureDefaultUrlImageSettings(persisted.settings ?? currentState.settings)
   const hasPersistedAgentConversations = Array.isArray(persisted.agentConversations)
   if (hasPersistedAgentConversations && normalizeAgentConversations(persisted.agentConversations).length > 0) {
     agentConversationMigrationPending = true
@@ -975,7 +1041,12 @@ function normalizeInputImages(value: unknown): InputImage[] {
   return value
     .map((img): InputImage | null => {
       if (!isRecord(img) || typeof img.id !== 'string') return null
-      return { id: img.id, dataUrl: typeof img.dataUrl === 'string' ? img.dataUrl : '' }
+      const sourceUrl = normalizeSourceUrl(img.sourceUrl)
+      return {
+        id: img.id,
+        dataUrl: typeof img.dataUrl === 'string' ? img.dataUrl : '',
+        ...(sourceUrl ? { sourceUrl } : {}),
+      }
     })
     .filter((img): img is InputImage => img != null)
 }
@@ -1139,7 +1210,7 @@ function getPersistableAgentInputDrafts(state: AppState) {
     if (!conversationIds.has(conversationId) || isEmptyAgentInputDraft(draft)) continue
     persistable[conversationId] = {
       ...copyAgentInputDraft(draft),
-      inputImages: draft.inputImages.map((img) => ({ id: img.id, dataUrl: '' })),
+      inputImages: draft.inputImages.map(getPersistableInputImage),
     }
   }
   return persistable
@@ -2065,7 +2136,7 @@ async function completeRecoveredFalTask(task: TaskRecord, result: Awaited<Return
   if (!latest || latest.status === 'done' || latest.error === AGENT_STOPPED_MESSAGE) return
   if (latest.status !== 'running' && !latest.falRecoverable) return
 
-  const { outputIds, outputDataUrls, outputImageSizes, transparentOriginalImageIds } = await storeTaskOutputImages(task, result.images)
+  const { outputIds, outputDataUrls, outputImageSizes, transparentOriginalImageIds } = await storeTaskOutputImages(task, result.images, result.rawImageUrls)
   const actualParamsList = await resolveImageSizeParamsList(outputDataUrls, result.actualParamsList, outputImageSizes)
   const latestBeforeUpdate = useStore.getState().tasks.find((item) => item.id === task.id)
   if (!latestBeforeUpdate || latestBeforeUpdate.status === 'done' || latestBeforeUpdate.error === AGENT_STOPPED_MESSAGE || (latestBeforeUpdate.status !== 'running' && !latestBeforeUpdate.falRecoverable)) {
@@ -2079,6 +2150,7 @@ async function completeRecoveredFalTask(task: TaskRecord, result: Awaited<Return
     actualParams: firstActualParams(actualParamsList),
     actualParamsByImage: mapActualParamsByImage(outputIds, actualParamsList),
     revisedPromptByImage: undefined,
+    rawImageUrls: result.rawImageUrls?.length ? result.rawImageUrls : undefined,
     status: 'done',
     error: null,
     falRecoverable: false,
@@ -2234,14 +2306,16 @@ export async function initStore() {
   const restoredInputImages: InputImage[] = []
   for (const img of persistedInputImages) {
     if (img.dataUrl) {
-      restoredInputImages.push(img)
-      cacheImage(img.id, img.dataUrl)
+      const restoredImage = restoreInlineInputImageDataUrl(img)
+      restoredInputImages.push(restoredImage)
+      cacheImage(restoredImage.id, restoredImage.dataUrl)
       continue
     }
     const storedImage = await getImage(img.id)
     if (storedImage?.dataUrl) {
-      restoredInputImages.push({ ...img, dataUrl: storedImage.dataUrl })
-      cacheImage(img.id, storedImage.dataUrl)
+      const restoredImage = restoreInputImageDataUrl(img, storedImage)
+      restoredInputImages.push(restoredImage)
+      cacheImage(restoredImage.id, restoredImage.dataUrl)
     }
   }
   if (restoredInputImages.length !== persistedInputImages.length || restoredInputImages.some((img, index) => img.dataUrl !== persistedInputImages[index]?.dataUrl)) {
@@ -2252,14 +2326,16 @@ export async function initStore() {
     const restoredGalleryImages: InputImage[] = []
     for (const img of galleryInputDraft.inputImages) {
       if (img.dataUrl) {
-        restoredGalleryImages.push(img)
-        cacheImage(img.id, img.dataUrl)
+        const restoredImage = restoreInlineInputImageDataUrl(img)
+        restoredGalleryImages.push(restoredImage)
+        cacheImage(restoredImage.id, restoredImage.dataUrl)
         continue
       }
       const storedImage = await getImage(img.id)
       if (storedImage?.dataUrl) {
-        restoredGalleryImages.push({ ...img, dataUrl: storedImage.dataUrl })
-        cacheImage(img.id, storedImage.dataUrl)
+        const restoredImage = restoreInputImageDataUrl(img, storedImage)
+        restoredGalleryImages.push(restoredImage)
+        cacheImage(restoredImage.id, restoredImage.dataUrl)
       }
     }
     const shouldClearMask = Boolean(galleryInputDraft.maskDraft) && !restoredGalleryImages.some((img) => img.id === galleryInputDraft.maskDraft?.targetImageId)
@@ -2291,14 +2367,16 @@ export async function initStore() {
     const restoredDraftImages: InputImage[] = []
     for (const img of draft.inputImages) {
       if (img.dataUrl) {
-        restoredDraftImages.push(img)
-        cacheImage(img.id, img.dataUrl)
+        const restoredImage = restoreInlineInputImageDataUrl(img)
+        restoredDraftImages.push(restoredImage)
+        cacheImage(restoredImage.id, restoredImage.dataUrl)
         continue
       }
       const storedImage = await getImage(img.id)
       if (storedImage?.dataUrl) {
-        restoredDraftImages.push({ ...img, dataUrl: storedImage.dataUrl })
-        cacheImage(img.id, storedImage.dataUrl)
+        const restoredImage = restoreInputImageDataUrl(img, storedImage)
+        restoredDraftImages.push(restoredImage)
+        cacheImage(restoredImage.id, restoredImage.dataUrl)
       }
     }
 
@@ -2405,7 +2483,7 @@ export async function submitTask(options: { allowFullMask?: boolean; useCurrentA
 
   // 持久化输入图片到 IndexedDB（此前只在内存缓存中）
   for (const img of orderedInputImages) {
-    await storeImage(img.dataUrl)
+    await storeImage(img.dataUrl, 'upload', img.sourceUrl)
   }
 
   const normalizedParams = normalizeParamsForSettings(params, requestSettings, { hasInputImages: orderedInputImages.length > 0 })
@@ -2845,18 +2923,21 @@ function addTaskReferencedImageIds(target: Set<string>, task: TaskRecord) {
   for (const id of task.streamPartialImageIds || []) target.add(id)
 }
 
-async function storeTaskOutputImages(task: TaskRecord, images: string[]) {
+async function storeTaskOutputImages(task: TaskRecord, images: string[], rawImageUrls?: string[]) {
   const outputIds: string[] = []
   const outputDataUrls: string[] = []
   const outputImageSizes: Array<{ width?: number; height?: number }> = []
   const transparentOriginalImageIds: string[] = []
   const storedImageIds: string[] = []
+  const alignedRawImageUrls = rawImageUrls?.length === images.length ? rawImageUrls : undefined
 
   try {
-    for (const dataUrl of images) {
+    for (let i = 0; i < images.length; i++) {
+      const dataUrl = images[i]
+      const sourceUrl = normalizeSourceUrl(alignedRawImageUrls?.[i])
       let outputDataUrl = dataUrl
       if (task.transparentOutput) {
-        const original = await storeImageWithSize(dataUrl, 'generated')
+        const original = await storeImageWithSize(dataUrl, 'generated', sourceUrl)
         storedImageIds.push(original.id)
         cacheImage(original.id, dataUrl)
 
@@ -2873,7 +2954,7 @@ async function storeTaskOutputImages(task: TaskRecord, images: string[]) {
         }
       }
 
-      const stored = await storeImageWithSize(outputDataUrl, 'generated')
+      const stored = await storeImageWithSize(outputDataUrl, 'generated', task.transparentOutput ? undefined : sourceUrl)
       storedImageIds.push(stored.id)
       cacheImage(stored.id, outputDataUrl)
       outputIds.push(stored.id)
@@ -2934,8 +3015,8 @@ async function persistTaskStreamPartialImage(taskId: string, dataUrl: string) {
 async function readAgentImageDataUrls(ids: string[]) {
   const dataUrls: string[] = []
   for (const id of ids) {
-    const dataUrl = await ensureImageCached(id)
-    if (dataUrl) dataUrls.push(dataUrl)
+    const image = await getApiInputImage(id)
+    if (image) dataUrls.push(image.sourceUrl ?? image.dataUrl)
   }
   return dataUrls
 }
@@ -2967,9 +3048,9 @@ async function createAgentGeneratedImagesInputItem(round: AgentRound, tasks: Tas
       continue
     }
     for (const imageId of task.outputImages) {
-      const dataUrl = await ensureImageCached(imageId)
-      if (dataUrl) {
-        contentParts.push({ type: 'input_image', image_url: dataUrl })
+      const image = await getApiInputImage(imageId)
+      if (image) {
+        contentParts.push({ type: 'input_image', image_url: image.sourceUrl ?? image.dataUrl })
       }
       const refId = getAgentGeneratedImageReferenceId(round, imageIndex)
       const prompt = truncateAgentReferencePrompt(task.prompt || '')
@@ -2996,9 +3077,9 @@ async function createAgentBatchImagesInputItem(round: AgentRound, tasks: TaskRec
     const task = tasks.find((item) => item.id === taskId)
     if (!task || task.status !== 'done') continue
     for (const imgId of task.outputImages) {
-      const dataUrl = await ensureImageCached(imgId)
-      if (dataUrl) {
-        contentParts.push({ type: 'input_image', image_url: dataUrl })
+      const image = await getApiInputImage(imgId)
+      if (image) {
+        contentParts.push({ type: 'input_image', image_url: image.sourceUrl ?? image.dataUrl })
       }
       const refId = getAgentGeneratedImageReferenceId(round, imageIndex)
       const prompt = truncateAgentReferencePrompt(task.prompt || '')
@@ -3563,7 +3644,7 @@ export async function submitAgentMessage() {
   const inputImageIds = uniqueIds(orderedInputImages.map((image) => image.id))
 
   for (const image of orderedInputImages) {
-    await storeImage(image.dataUrl)
+    await storeImage(image.dataUrl, 'upload', image.sourceUrl)
   }
 
   const requestSettings = createSettingsForApiProfile(normalizedSettings, activeProfile)
@@ -3879,7 +3960,7 @@ async function executeAgentRound(
       const latestTask = useStore.getState().tasks.find((task) => task.id === taskId)
       if (latestTask?.status === 'done' && latestTask.outputImages.length > 0) return taskId
 
-      const stored = await storeImageWithSize(image.dataUrl, 'generated')
+      const stored = await storeImageWithSize(image.dataUrl, 'generated', image.rawImageUrl)
       cacheImage(stored.id, image.dataUrl)
       const actualParams: Partial<TaskParams> = {
         ...(Object.keys(image.actualParams ?? {}).length ? image.actualParams : {}),
@@ -3892,6 +3973,7 @@ async function executeAgentRound(
         actualParams,
         actualParamsByImage: { [stored.id]: actualParams },
         revisedPromptByImage: image.revisedPrompt ? { [stored.id]: image.revisedPrompt } : undefined,
+        rawImageUrls: image.rawImageUrl ? [image.rawImageUrl] : undefined,
         rawResponsePayload,
         status: 'done',
         error: null,
@@ -3999,9 +4081,10 @@ async function executeAgentRound(
     let pendingToolTextSeparator = false
 
     // Helper: resolve reference image ids to data URLs for batch image calls
-    const resolveReferenceImages = async (referenceIds: string[]): Promise<{ dataUrls: string[]; imageIds: string[] }> => {
+    const resolveReferenceImages = async (referenceIds: string[]): Promise<{ dataUrls: string[]; imageIds: string[]; urls?: string[] }> => {
       const dataUrls: string[] = []
       const imageIds: string[] = []
+      const imagesForApi: InputImage[] = []
       for (const refId of referenceIds) {
         // Resolve both generated image refs and current/user input refs from XML tags.
         const latestConv = useStore.getState().agentConversations.find((item) => item.id === conversationId)
@@ -4011,8 +4094,11 @@ async function executeAgentRound(
             const currentRefId = getAgentCurrentReferenceId(r, imgIdx)
             if (currentRefId === refId) {
               const imageId = r.inputImageIds[imgIdx]
-              const dataUrl = await ensureImageCached(imageId)
-              if (dataUrl) dataUrls.push(dataUrl)
+              const image = await getApiInputImage(imageId)
+              if (image) {
+                dataUrls.push(image.dataUrl)
+                imagesForApi.push(image)
+              }
               imageIds.push(imageId)
             }
           }
@@ -4022,14 +4108,17 @@ async function executeAgentRound(
             if (generatedRefId === refId) {
               const imageId = outputImages[imgIdx]
               if (!imageId) continue
-              const dataUrl = await ensureImageCached(imageId)
-              if (dataUrl) dataUrls.push(dataUrl)
+              const image = await getApiInputImage(imageId)
+              if (image) {
+                dataUrls.push(image.dataUrl)
+                imagesForApi.push(image)
+              }
               imageIds.push(imageId)
             }
           }
         }
       }
-      return { dataUrls, imageIds }
+      return { dataUrls, imageIds, urls: getCompleteInputImageUrls(imagesForApi) }
     }
 
     const parseSingleImageCallArguments = (args: string): { id: string; prompt: string } | null => {
@@ -4048,6 +4137,7 @@ async function executeAgentRound(
       taskId: string
       prompt: string
       referenceImageDataUrls: string[]
+      referenceImageUrls?: string[]
       taskParams: TaskParams
       signal: AbortSignal
       onPartialImage?: (event: { image: string; partialImageIndex?: number }) => void | Promise<void>
@@ -4057,6 +4147,7 @@ async function executeAgentRound(
         prompt: replaceImageMentionsForApi(opts.prompt, opts.referenceImageDataUrls.length),
         params: opts.taskParams,
         inputImageDataUrls: opts.referenceImageDataUrls,
+        inputImageUrls: opts.referenceImageUrls,
         onPartialImage: opts.onPartialImage
           ? (partial) => {
               void opts.onPartialImage?.({ image: partial.image, partialImageIndex: partial.partialImageIndex ?? partial.requestIndex })
@@ -4081,6 +4172,7 @@ async function executeAgentRound(
       return {
         image: dataUrl ? {
           dataUrl,
+          rawImageUrl: result.rawImageUrls?.[0],
           actualParams: result.actualParamsList?.[0] ?? result.actualParams,
           revisedPrompt: result.revisedPrompts?.[0] ?? opts.prompt,
         } satisfies AgentApiResultImage : null,
@@ -4121,6 +4213,7 @@ async function executeAgentRound(
           taskId,
           prompt: item.prompt,
           referenceImageDataUrls: references.dataUrls,
+          referenceImageUrls: references.urls,
           taskParams,
           signal: controller.signal,
           onPartialImage: async ({ image, partialImageIndex }) => {
@@ -4193,6 +4286,7 @@ async function executeAgentRound(
                 taskId: taskIdByToolCallId.get(batchToolCallId)!,
                 prompt: item.prompt,
                 referenceImageDataUrls: references.dataUrls,
+                referenceImageUrls: references.urls,
                 taskParams,
                 signal: controller.signal,
                 onPartialImage: async ({ image, partialImageIndex }) => {
@@ -4211,6 +4305,7 @@ async function executeAgentRound(
               batchItemId: item.id,
               prompt: item.prompt,
               referenceImageDataUrls: references.dataUrls,
+              referenceImageUrls: references.urls,
               referenceIds,
               allowPromptRewrite: requestSettings.allowPromptRewrite,
               signal: controller.signal,
@@ -4396,7 +4491,7 @@ async function executeAgentRound(
         }
         const promptRefIds = uniqueIds(extractAgentReferenceIds(image.revisedPrompt ?? ''))
         const promptRefs = await resolveReferenceImages(promptRefIds)
-        const stored = await storeImageWithSize(image.dataUrl, 'generated')
+        const stored = await storeImageWithSize(image.dataUrl, 'generated', image.rawImageUrl)
         cacheImage(stored.id, image.dataUrl)
         const actualParams: Partial<TaskParams> = {
           ...(Object.keys(image.actualParams ?? {}).length ? image.actualParams : {}),
@@ -4419,6 +4514,7 @@ async function executeAgentRound(
           actualParams,
           actualParamsByImage: { [stored.id]: actualParams },
           revisedPromptByImage: image.revisedPrompt ? { [stored.id]: image.revisedPrompt } : undefined,
+          rawImageUrls: image.rawImageUrl ? [image.rawImageUrl] : undefined,
           rawResponsePayload: result.rawResponsePayload,
           status: 'done',
           error: null,
@@ -4690,12 +4786,13 @@ async function executeTask(taskId: string) {
 
   try {
     // 获取输入图片 data URLs
-    const inputDataUrls: string[] = []
+    const inputImagesForApi: InputImage[] = []
     for (const imgId of task.inputImageIds) {
-      const dataUrl = await ensureImageCached(imgId)
-      if (!dataUrl) throw new Error('输入图片已不存在')
-      inputDataUrls.push(dataUrl)
+      const image = await getApiInputImage(imgId)
+      if (!image) throw new Error('输入图片已不存在')
+      inputImagesForApi.push(image)
     }
+    const inputDataUrls = inputImagesForApi.map((image) => image.dataUrl)
     let maskDataUrl: string | undefined
     if (task.maskImageId) {
       maskDataUrl = await ensureImageCached(task.maskImageId)
@@ -4711,6 +4808,7 @@ async function executeTask(taskId: string) {
       prompt: replaceImageMentionsForApi(requestPrompt, inputDataUrls.length),
       params: task.params,
       inputImageDataUrls: inputDataUrls,
+      inputImageUrls: getCompleteInputImageUrls(inputImagesForApi),
       maskDataUrl,
       onFalRequestEnqueued: (request) => {
         falRequestInfo = request
@@ -4740,7 +4838,7 @@ async function executeTask(taskId: string) {
     }
 
     // 存储输出图片
-    const { outputIds, outputDataUrls, outputImageSizes, transparentOriginalImageIds } = await storeTaskOutputImages(task, result.images)
+    const { outputIds, outputDataUrls, outputImageSizes, transparentOriginalImageIds } = await storeTaskOutputImages(task, result.images, result.rawImageUrls)
     const isAsyncCustomTask = taskProvider !== 'fal' && taskProvider !== 'openai' && Boolean(customTaskInfo)
     const actualParamsList = await resolveImageSizeParamsList(
       outputDataUrls,
@@ -5130,9 +5228,9 @@ export async function reuseConfig(task: TaskRecord) {
   // 恢复输入图片
   const imgs: InputImage[] = []
   for (const imgId of task.inputImageIds) {
-    const dataUrl = await ensureImageCached(imgId)
-    if (dataUrl) {
-      imgs.push({ id: imgId, dataUrl })
+    const image = await getApiInputImage(imgId)
+    if (image) {
+      imgs.push(image)
     }
   }
   setInputImages(imgs)
@@ -5179,11 +5277,14 @@ export async function editOutputs(task: TaskRecord) {
   if (!task.outputImages?.length) return
 
   let added = 0
-  for (const imgId of task.outputImages) {
+  const alignedRawImageUrls = task.rawImageUrls?.length === task.outputImages.length ? task.rawImageUrls : undefined
+  for (let i = 0; i < task.outputImages.length; i++) {
+    const imgId = task.outputImages[i]
     if (inputImages.find((i) => i.id === imgId)) continue
-    const dataUrl = await ensureImageCached(imgId)
-    if (dataUrl) {
-      addInputImage({ id: imgId, dataUrl })
+    const image = await getApiInputImage(imgId)
+    const sourceUrl = normalizeSourceUrl(image?.sourceUrl ?? alignedRawImageUrls?.[i])
+    if (image) {
+      addInputImage({ ...image, ...(sourceUrl ? { sourceUrl } : {}) })
       added++
     }
   }
@@ -5347,7 +5448,7 @@ async function completeRecoveredCustomTask(task: TaskRecord, result: Awaited<Ret
   if (!latest || latest.status === 'done' || latest.error === AGENT_STOPPED_MESSAGE) return
   if (latest.status !== 'running' && !latest.customRecoverable) return
 
-  const { outputIds, outputDataUrls, outputImageSizes, transparentOriginalImageIds } = await storeTaskOutputImages(task, result.images)
+  const { outputIds, outputDataUrls, outputImageSizes, transparentOriginalImageIds } = await storeTaskOutputImages(task, result.images, result.rawImageUrls)
   const actualParamsList = await resolveImageSizeParamsList(outputDataUrls, undefined, outputImageSizes)
   const latestBeforeUpdate = useStore.getState().tasks.find((item) => item.id === task.id)
   if (!latestBeforeUpdate || latestBeforeUpdate.status === 'done' || latestBeforeUpdate.error === AGENT_STOPPED_MESSAGE || (latestBeforeUpdate.status !== 'running' && !latestBeforeUpdate.customRecoverable)) {
@@ -5361,6 +5462,7 @@ async function completeRecoveredCustomTask(task: TaskRecord, result: Awaited<Ret
     actualParams: firstActualParams(actualParamsList),
     actualParamsByImage: mapActualParamsByImage(outputIds, actualParamsList),
     revisedPromptByImage: undefined,
+    rawImageUrls: result.rawImageUrls?.length ? result.rawImageUrls : undefined,
     status: 'done',
     error: null,
     customRecoverable: false,
@@ -5477,11 +5579,13 @@ export async function importData(file: File, options: ImportOptions = { importCo
     if (options.importTasks && data.tasks && data.imageFiles) {
       // 还原图片
       for (const [id, info] of Object.entries(data.imageFiles)) {
-        const dataUrl = readExportZipFileAsDataUrl(files, info.path)
+        const sourceUrl = normalizeSourceUrl(info.sourceUrl)
+        const dataUrl = info.path ? readExportZipFileAsDataUrl(files, info.path) : sourceUrl ? getImageProxyUrl(sourceUrl) : undefined
         if (!dataUrl) continue
         await putImage({
           id,
           dataUrl,
+          sourceUrl,
           createdAt: info.createdAt,
           source: info.source,
           width: info.width,
@@ -5588,12 +5692,21 @@ export async function createInputImageFromFile(file: File): Promise<InputImage |
 
 /** 添加图片到输入（右键菜单）—— 支持 data/blob/http URL */
 export async function addImageFromUrl(src: string): Promise<void> {
+  const sourceUrl = normalizeSourceUrl(src)
+  if (sourceUrl) {
+    const dataUrl = getImageProxyUrl(sourceUrl)
+    const id = await storeImage(dataUrl, 'upload', sourceUrl)
+    cacheImage(id, dataUrl)
+    useStore.getState().addInputImage({ id, dataUrl, sourceUrl })
+    return
+  }
+
   const res = await fetch(src)
   const blob = await res.blob()
   if (!blob.type.startsWith('image/')) throw new Error('不是有效的图片')
   const dataUrl = await blobToDataUrl(blob)
-  const id = await storeImage(dataUrl, 'upload')
+  const id = await storeImage(dataUrl, 'upload', sourceUrl)
   cacheImage(id, dataUrl)
-  useStore.getState().addInputImage({ id, dataUrl })
+  useStore.getState().addInputImage({ id, dataUrl, ...(sourceUrl ? { sourceUrl } : {}) })
 }
 

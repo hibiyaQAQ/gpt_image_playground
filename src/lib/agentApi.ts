@@ -6,6 +6,7 @@ export interface AgentApiResultImage {
   toolCallId?: string
   action?: string
   dataUrl: string
+  rawImageUrl?: string
   actualParams?: Partial<TaskParams>
   revisedPrompt?: string
 }
@@ -828,6 +829,7 @@ export async function callBatchImageSingle(opts: {
   batchItemId: string
   prompt: string
   referenceImageDataUrls: string[]
+  referenceImageUrls?: string[]
   referenceIds?: string[]
   allowPromptRewrite?: boolean
   signal?: AbortSignal
@@ -836,6 +838,10 @@ export async function callBatchImageSingle(opts: {
   onImageToolCompleted?: (image: AgentApiResultImage) => void | Promise<void>
 }): Promise<BatchImageCallResult> {
   const { profile, params, batchItemId, prompt, referenceImageDataUrls, referenceIds, allowPromptRewrite, signal, onImageToolStarted, onPartialImage, onImageToolCompleted } = opts
+  const referenceImageUrls = opts.referenceImageUrls?.length === referenceImageDataUrls.length
+    ? opts.referenceImageUrls
+    : []
+  const referenceImagesForApi = referenceImageUrls.length === referenceImageDataUrls.length ? referenceImageUrls : referenceImageDataUrls
   const mime = MIME_MAP[params.output_format] || 'image/png'
   const proxyConfig = readClientDevProxyConfig()
   const useApiProxy = shouldUseApiProxy(profile.apiProxy, proxyConfig)
@@ -852,12 +858,12 @@ export async function callBatchImageSingle(opts: {
     const promptText = allowPromptRewrite ? prompt : `${PROMPT_REWRITE_GUARD_PREFIX}\n${prompt}`
     const guardedPrompt = [referenceMapping, promptText].filter(Boolean).join('\n\n')
     let input: unknown
-    if (referenceImageDataUrls.length > 0) {
+    if (referenceImagesForApi.length > 0) {
       input = [{
         role: 'user',
         content: [
           { type: 'input_text', text: guardedPrompt },
-          ...referenceImageDataUrls.map((dataUrl) => ({
+          ...referenceImagesForApi.map((dataUrl) => ({
             type: 'input_image',
             image_url: dataUrl,
           })),
@@ -870,7 +876,7 @@ export async function callBatchImageSingle(opts: {
     // Build image_generation tool with current params
     const tool: Record<string, unknown> = {
       type: 'image_generation',
-      action: referenceImageDataUrls.length > 0 ? 'auto' : 'generate',
+      action: referenceImagesForApi.length > 0 ? 'auto' : 'generate',
       size: params.size,
       output_format: params.output_format,
       moderation: params.moderation,

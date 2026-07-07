@@ -2,6 +2,7 @@ import { zipSync } from 'fflate'
 import type { TaskRecord } from '../types'
 import { ensureImageCached } from '../store'
 import { getNumberedFileNameBase, sanitizeFileNamePart } from './exportFileName'
+import { getImageProxyUrl } from './imageProxy'
 
 const MIME_EXTENSIONS: Record<string, string> = {
   'image/png': 'png',
@@ -107,6 +108,7 @@ async function getImageBlob(imageIdOrUrl: string): Promise<Blob> {
   if (!imageIdOrUrl.startsWith('data:') && !imageIdOrUrl.startsWith('http://') && !imageIdOrUrl.startsWith('https://')) {
     src = await ensureImageCached(imageIdOrUrl) ?? imageIdOrUrl
   }
+  src = getImageProxyUrl(src)
 
   const res = await fetch(src)
   if (!res.ok && !src.startsWith('data:')) throw new Error(`读取图片失败：${imageIdOrUrl}`)

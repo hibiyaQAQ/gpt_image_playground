@@ -56,6 +56,8 @@ body 模板变量：
 - $prompt：当前提示词。
 - $params.size、$params.quality、$params.output_format、$params.output_compression、$params.moderation、$params.n：应用内参数。
 - $inputImages.dataUrls：参考图 data URL 数组；没有参考图时会自动省略该字段。
+- $inputImages.urls：参考图 HTTP URL 数组；仅当所有参考图都有可访问的原始 URL 时提供。
+- $inputImages.imageUrlObjects：参考图 HTTP URL 对象数组，格式为 [{"image_url":"https://..."}]，用于 images: [{ image_url }] 这类 JSON 接口。
 - $mask.dataUrl：遮罩图 data URL；没有遮罩时会自动省略该字段。
 
 multipart files 示例：

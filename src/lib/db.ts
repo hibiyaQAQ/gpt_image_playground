@@ -1,4 +1,5 @@
 import type { AgentConversation, TaskRecord, StoredImage, StoredImageThumbnail } from '../types'
+import { getImageProxyUrl } from './imageProxy'
 
 const DB_NAME = 'gpt-image-playground'
 const DB_VERSION = 3
@@ -146,7 +147,7 @@ export async function getImageThumbnail(id: string): Promise<StoredImageThumbnai
     return thumbnail
   }
 
-  const metadata = await safeCreateImageThumbnail(image.dataUrl)
+  const metadata = await safeCreateImageThumbnail(getDisplayImageDataUrl(image.dataUrl, image.sourceUrl))
   if (!metadata.thumbnailDataUrl) return undefined
   const thumbnail: StoredImageThumbnail = {
     id,
@@ -237,22 +238,34 @@ export interface StoreImageResult {
   height?: number
 }
 
+function normalizeSourceUrl(value: unknown): string | undefined {
+  return typeof value === 'string' && /^https?:\/\//i.test(value) ? value : undefined
+}
+
+function getDisplayImageDataUrl(dataUrl: string, sourceUrl?: string): string {
+  const normalizedSourceUrl = normalizeSourceUrl(sourceUrl) ?? normalizeSourceUrl(dataUrl)
+  if (normalizedSourceUrl && dataUrl === normalizedSourceUrl) return getImageProxyUrl(normalizedSourceUrl)
+  return dataUrl
+}
+
 /**
  * 存储图片，若已存在（按 hash 去重）则跳过。
  * 返回 image id 及图片真实宽高。
  */
-export async function storeImage(dataUrl: string, source: NonNullable<StoredImage['source']> = 'upload'): Promise<string> {
-  return (await storeImageWithSize(dataUrl, source)).id
+export async function storeImage(dataUrl: string, source: NonNullable<StoredImage['source']> = 'upload', sourceUrl?: string): Promise<string> {
+  return (await storeImageWithSize(dataUrl, source, sourceUrl)).id
 }
 
-export async function storeImageWithSize(dataUrl: string, source: NonNullable<StoredImage['source']> = 'upload'): Promise<StoreImageResult> {
+export async function storeImageWithSize(dataUrl: string, source: NonNullable<StoredImage['source']> = 'upload', sourceUrl?: string): Promise<StoreImageResult> {
   const id = await hashDataUrl(dataUrl)
   const existing = await getImage(id)
+  const normalizedSourceUrl = normalizeSourceUrl(sourceUrl)
   if (!existing) {
-    const thumbnail = await safeCreateImageThumbnail(dataUrl)
+    const thumbnail = await safeCreateImageThumbnail(getDisplayImageDataUrl(dataUrl, normalizedSourceUrl))
     await putImage({
       id,
       dataUrl,
+      ...(normalizedSourceUrl ? { sourceUrl: normalizedSourceUrl } : {}),
       createdAt: Date.now(),
       source,
       width: thumbnail.width,
@@ -271,11 +284,19 @@ export async function storeImageWithSize(dataUrl: string, source: NonNullable<St
   }
 
   if ((await getStoredImageThumbnail(id))?.thumbnailVersion !== THUMBNAIL_VERSION) {
-    const thumbnail = await safeCreateImageThumbnail(existing.dataUrl)
+    const thumbnail = await safeCreateImageThumbnail(getDisplayImageDataUrl(existing.dataUrl, existing.sourceUrl))
     const width = thumbnail.width ?? existing.width
     const height = thumbnail.height ?? existing.height
-    if (thumbnail.width && thumbnail.height && (existing.width !== thumbnail.width || existing.height !== thumbnail.height)) {
-      await putImage({ ...existing, width: thumbnail.width, height: thumbnail.height })
+    if (
+      (thumbnail.width && thumbnail.height && (existing.width !== thumbnail.width || existing.height !== thumbnail.height)) ||
+      (normalizedSourceUrl && existing.sourceUrl !== normalizedSourceUrl)
+    ) {
+      await putImage({
+        ...existing,
+        ...(normalizedSourceUrl ? { sourceUrl: normalizedSourceUrl } : {}),
+        width,
+        height,
+      })
     }
     if (thumbnail.thumbnailDataUrl) {
       await putImageThumbnail({
@@ -287,6 +308,9 @@ export async function storeImageWithSize(dataUrl: string, source: NonNullable<St
       })
     }
     return { id, width, height }
+  }
+  if (normalizedSourceUrl && existing.sourceUrl !== normalizedSourceUrl) {
+    await putImage({ ...existing, sourceUrl: normalizedSourceUrl })
   }
   return { id, width: existing.width, height: existing.height }
 }

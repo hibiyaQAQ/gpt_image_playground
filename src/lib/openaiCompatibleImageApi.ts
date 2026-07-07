@@ -737,13 +737,32 @@ function resolveTemplateValue(value: unknown, context: Record<string, unknown>):
   return value
 }
 
+function templateUsesInputImageUrls(value: unknown): boolean {
+  if (typeof value === 'string') {
+    return value === '$inputImages.urls' || value === '$inputImages.imageUrlObjects'
+  }
+  if (Array.isArray(value)) return value.some(templateUsesInputImageUrls)
+  if (value && typeof value === 'object') {
+    return Object.values(value as Record<string, unknown>).some(templateUsesInputImageUrls)
+  }
+  return false
+}
+
 function createCustomProviderContext(opts: CallApiOptions, profile: ApiProfile) {
+  const inputImageUrls = opts.inputImageUrls?.length === opts.inputImageDataUrls.length
+    ? opts.inputImageUrls.filter(isHttpUrl)
+    : []
+  const hasCompleteInputImageUrls = inputImageUrls.length === opts.inputImageDataUrls.length
   return {
     profile,
     prompt: opts.prompt,
     params: opts.params,
     inputImages: {
       dataUrls: opts.inputImageDataUrls.length ? opts.inputImageDataUrls : undefined,
+      urls: hasCompleteInputImageUrls && inputImageUrls.length ? inputImageUrls : undefined,
+      imageUrlObjects: hasCompleteInputImageUrls && inputImageUrls.length
+        ? inputImageUrls.map((url) => ({ image_url: url }))
+        : undefined,
       count: opts.inputImageDataUrls.length,
     },
     mask: {
@@ -854,16 +873,21 @@ async function submitCustomRequest(mapping: CustomProviderSubmitMapping, opts: C
       }
       body = formData
     } else {
-      assertImageInputPayloadSize(
-        opts.inputImageDataUrls.reduce((sum, dataUrl) => sum + getDataUrlEncodedByteSize(dataUrl), 0) +
-          (opts.maskDataUrl ? getDataUrlEncodedByteSize(opts.maskDataUrl) : 0),
-      )
       headers['Content-Type'] = 'application/json'
+      if (
+        opts.inputImageDataUrls.length > 0 &&
+        templateUsesInputImageUrls(mapping.body) &&
+        (opts.inputImageUrls?.filter(isHttpUrl).length ?? 0) !== opts.inputImageDataUrls.length
+      ) {
+        throw new Error('当前服务商需要参考图 HTTP URL，但部分参考图没有可供 API 访问的原始 URL。请使用网页图片右键加入参考图，或使用服务商返回原始图片 URL 的生成结果。')
+      }
       const resolved = resolveTemplateValue(mapping.body ?? {}, context)
       if (profile.responseFormatB64Json && resolved && typeof resolved === 'object' && !Array.isArray(resolved)) {
         (resolved as Record<string, unknown>).response_format = 'b64_json'
       }
-      body = JSON.stringify(resolved)
+      const jsonBody = JSON.stringify(resolved)
+      assertImageInputPayloadSize(jsonBody.length)
+      body = jsonBody
     }
   }
 
@@ -1037,6 +1061,10 @@ async function callResponsesImageApi(opts: CallApiOptions, profile: ApiProfile):
 
 async function callResponsesImageApiSingle(opts: CallApiOptions, profile: ApiProfile): Promise<CallApiResult> {
   const { prompt, params, inputImageDataUrls } = opts
+  const inputImageUrls = opts.inputImageUrls?.length === inputImageDataUrls.length
+    ? opts.inputImageUrls.filter(isHttpUrl)
+    : []
+  const responsesInputImages = inputImageUrls.length === inputImageDataUrls.length ? inputImageUrls : inputImageDataUrls
   const mime = MIME_MAP[params.output_format] || 'image/png'
   const proxyConfig = readClientDevProxyConfig()
   const useApiProxy = shouldUseApiProxy(profile.apiProxy, proxyConfig)
@@ -1056,7 +1084,7 @@ async function callResponsesImageApiSingle(opts: CallApiOptions, profile: ApiPro
 
     const body: Record<string, unknown> = {
       model: profile.model,
-      input: createResponsesInput(prompt, inputImageDataUrls, opts.settings.allowPromptRewrite),
+      input: createResponsesInput(prompt, responsesInputImages, opts.settings.allowPromptRewrite),
       tools: [createResponsesImageTool(params, inputImageDataUrls.length > 0, profile, opts.maskDataUrl)],
       tool_choice: 'required',
     }

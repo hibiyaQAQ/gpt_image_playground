@@ -39,21 +39,23 @@ export function buildExportZip(params: BuildExportZipParams) {
 
   if (params.options.exportTasks) {
     for (const img of params.images) {
-      const { ext, bytes } = dataUrlToBytes(img.dataUrl)
-      const path = getUniqueImagePath(imageFileNameBases.get(img.id) || `image-${img.id}`, ext, usedImagePaths)
-      const pathBase = path.slice('images/'.length, -(ext.length + 1))
+      const isEmbeddedImage = img.dataUrl.startsWith('data:image/')
+      const data = isEmbeddedImage ? dataUrlToBytes(img.dataUrl) : null
+      const path = data ? getUniqueImagePath(imageFileNameBases.get(img.id) || `image-${img.id}`, data.ext, usedImagePaths) : undefined
+      const pathBase = path && data ? path.slice('images/'.length, -(data.ext.length + 1)) : ''
       const createdAt = img.createdAt ?? imageCreatedAtFallback.get(img.id) ?? params.exportedAt
       imageFiles[img.id] = {
-        path,
+        ...(path ? { path } : {}),
         createdAt,
         source: img.source,
+        sourceUrl: img.sourceUrl,
         width: img.width,
         height: img.height,
       }
-      zipFiles[path] = [bytes, { mtime: new Date(createdAt) }]
+      if (path && data) zipFiles[path] = [data.bytes, { mtime: new Date(createdAt) }]
 
       const thumbnail = params.thumbnailsByImageId.get(img.id)
-      if (thumbnail?.thumbnailDataUrl) {
+      if (thumbnail?.thumbnailDataUrl && pathBase) {
         const { ext: thumbnailExt, bytes: thumbnailBytes } = dataUrlToBytes(thumbnail.thumbnailDataUrl)
         const thumbnailPath = `thumbnails/${pathBase}.${thumbnailExt}`
         imageFiles[img.id].width = imageFiles[img.id].width ?? thumbnail.width

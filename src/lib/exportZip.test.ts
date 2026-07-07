@@ -75,4 +75,45 @@ describe('exportZip', () => {
     expect(readExportZipFileAsDataUrl(parsed.files, 'images/task-task-1-partial.png')).toBe(images[2].dataUrl)
     expect(readExportZipFileAsDataUrl(parsed.files, 'thumbnails/task-task-1-input.jpeg')).toBe(thumbnail.thumbnailDataUrl)
   })
+
+  it('keeps URL-only reference images in the manifest without embedding image bytes', () => {
+    const task: TaskRecord = {
+      id: 'task-url',
+      prompt: '提示词',
+      params: {} as TaskParams,
+      inputImageIds: ['img-url'],
+      outputImages: [],
+      status: 'done',
+      error: null,
+      createdAt: 1700000000000,
+      finishedAt: 1700000000200,
+      elapsed: 200,
+    }
+    const images: StoredImage[] = [{
+      id: 'img-url',
+      dataUrl: 'https://cdn.example.com/ref.png',
+      sourceUrl: 'https://cdn.example.com/ref.png',
+      source: 'upload',
+    }]
+
+    const { bytes } = buildExportZip({
+      options: { exportConfig: false, exportTasks: true },
+      exportedAt: 1700000001000,
+      settings: {} as AppSettings,
+      tasks: [task],
+      images,
+      thumbnailsByImageId: new Map(),
+      favoriteCollections: [],
+      defaultFavoriteCollectionId: null,
+      agentConversations: [],
+    })
+    const parsed = readExportZip(bytes)
+
+    expect(parsed.manifest.imageFiles?.['img-url']).toMatchObject({
+      sourceUrl: 'https://cdn.example.com/ref.png',
+      source: 'upload',
+    })
+    expect(parsed.manifest.imageFiles?.['img-url']?.path).toBeUndefined()
+    expect(Object.keys(parsed.files).sort()).toEqual(['manifest.json'])
+  })
 })

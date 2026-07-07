@@ -136,13 +136,15 @@ function buildDefaultConfigOnlySettingsFromUrlParams(currentSettings: Partial<Ap
     if (streamPartialImagesParam !== null) patch.streamPartialImages = normalizeStreamPartialImages(streamPartialImagesParam)
   }
 
-  if (Object.keys(patch).length === 0) return {}
+  if (Object.keys(patch).length === 0 && !importedSettings) return {}
 
+  const patchedProfile = { ...activeProfile, ...patch, provider: activeProfile.provider }
+  const customProviders = settings.customProviders.filter((provider) => provider.id === activeProfile.provider)
   return normalizeSettings({
     ...settings,
-    profiles: settings.profiles.map((profile) =>
-      profile.id === activeProfile.id ? { ...profile, ...patch, provider: profile.provider } : profile,
-    ),
+    customProviders,
+    profiles: [patchedProfile],
+    activeProfileId: patchedProfile.id,
   })
 }
 

@@ -1,6 +1,6 @@
 import { useRef, useEffect, useCallback, useState, useMemo, useLayoutEffect } from 'react'
 import { createPortal } from 'react-dom'
-import { ALL_FAVORITES_COLLECTION_ID, deleteFavoriteCollection, getTaskFavoriteCollectionIds, useStore, submitTask, submitAgentMessage, stopAgentResponse, addImageFromFile, createInputImageFromFile, deleteImageIfUnreferenced, removeMultipleTasks, getCachedImage, ensureImageCached, getActiveAgentRounds, taskMatchesFilterStatus, taskMatchesSearchQuery } from '../store'
+import { ALL_FAVORITES_COLLECTION_ID, deleteFavoriteCollection, getTaskFavoriteCollectionIds, useStore, submitTask, submitAgentMessage, stopAgentResponse, addImageFromFile, addImageFromUrl, createInputImageFromFile, deleteImageIfUnreferenced, removeMultipleTasks, getCachedImage, ensureImageCached, ensureInputImageCached, getActiveAgentRounds, taskMatchesFilterStatus, taskMatchesSearchQuery } from '../store'
 import { DEFAULT_PARAMS, type TaskRecord } from '../types'
 import { getActiveApiProfile, getAgentImageApiProfile, normalizeSettings } from '../lib/apiProfiles'
 import { DEFAULT_FAL_IMAGE_SIZE, getChangedParams, getOutputImageLimitForSettings, normalizeParamsForSettings } from '../lib/paramCompatibility'
@@ -615,6 +615,7 @@ export default function InputBar() {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const cameraInputRef = useRef<HTMLInputElement>(null)
   const replaceFileInputRef = useRef<HTMLInputElement>(null)
+  const imageUrlInputRef = useRef<HTMLInputElement>(null)
   const textareaRef = useRef<HTMLDivElement>(null)
   const cardRef = useRef<HTMLDivElement>(null)
   const imagesRef = useRef<HTMLDivElement>(null)
@@ -624,10 +625,14 @@ export default function InputBar() {
   const [isSingleLine, setIsSingleLine] = useState(true)
   const [submitHover, setSubmitHover] = useState(false)
   const [attachHover, setAttachHover] = useState(false)
+  const [urlHover, setUrlHover] = useState(false)
   const [imageHintId, setImageHintId] = useState<string | null>(null)
   const [mobileCollapsed, setMobileCollapsed] = useState(false)
   const [showSizePicker, setShowSizePicker] = useState(false)
   const [showMobileUploadMenu, setShowMobileUploadMenu] = useState(false)
+  const [showImageUrlInput, setShowImageUrlInput] = useState(false)
+  const [imageUrlInput, setImageUrlInput] = useState('')
+  const [addingImageUrl, setAddingImageUrl] = useState(false)
   const [maskPreviewUrl, setMaskPreviewUrl] = useState('')
   const [imageDragIndex, setImageDragIndex] = useState<number | null>(null)
   const [imageDragOverIndex, setImageDragOverIndex] = useState<number | null>(null)
@@ -1112,6 +1117,47 @@ export default function InputBar() {
   const handleFilesRef = useRef(handleFiles)
   handleFilesRef.current = handleFiles
 
+  const handleAddImageUrl = useCallback(async () => {
+    const src = imageUrlInput.trim()
+    if (!src) {
+      showToast('请输入图片 URL', 'error')
+      return
+    }
+
+    let url: URL
+    try {
+      url = new URL(src)
+    } catch {
+      showToast('请输入有效的图片 URL', 'error')
+      return
+    }
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+      showToast('图片 URL 必须以 http:// 或 https:// 开头', 'error')
+      return
+    }
+    if (useStore.getState().inputImages.length >= API_MAX_IMAGES) {
+      showToast(`参考图数量已达上限（${API_MAX_IMAGES} 张），无法继续添加`, 'error')
+      return
+    }
+
+    try {
+      setAddingImageUrl(true)
+      await addImageFromUrl(src)
+      setImageUrlInput('')
+      setShowImageUrlInput(false)
+      showToast('已添加 URL 参考图', 'success')
+    } catch (err) {
+      showToast(`添加 URL 参考图失败：${err instanceof Error ? err.message : String(err)}`, 'error')
+    } finally {
+      setAddingImageUrl(false)
+    }
+  }, [imageUrlInput, showToast])
+
+  useEffect(() => {
+    if (!showImageUrlInput) return
+    imageUrlInputRef.current?.focus()
+  }, [showImageUrlInput])
+
   const openReplaceReferenceFilePicker = useCallback((idx: number, imageId: string) => {
     replaceImageTargetRef.current = { index: idx, id: imageId }
     replaceFileInputRef.current?.click()
@@ -1346,12 +1392,12 @@ export default function InputBar() {
 
       if (imageIds.length > 0) {
         Promise.all(imageIds.map(async (imageId) => {
-          const dataUrl = await ensureImageCached(imageId)
-          if (!dataUrl) {
+          const image = await ensureInputImageCached(imageId)
+          if (!image) {
             showToast('部分图片已不存在', 'error')
             return
           }
-          addInputImage({ id: imageId, dataUrl })
+          addInputImage(image)
         })).then(() => {
           showToast('已上传图片', 'success')
         }).catch((err) => showToast(`上传图片失败：${err instanceof Error ? err.message : String(err)}`, 'error'))
@@ -1883,6 +1929,44 @@ export default function InputBar() {
     )
   }
 
+  const renderImageUrlInput = () => (
+    <form
+      className="mb-3 flex flex-col gap-2 rounded-2xl border border-gray-200/70 bg-white/60 p-2 shadow-sm dark:border-white/[0.08] dark:bg-white/[0.04] sm:flex-row"
+      onSubmit={(e) => {
+        e.preventDefault()
+        void handleAddImageUrl()
+      }}
+    >
+      <input
+        ref={imageUrlInputRef}
+        value={imageUrlInput}
+        onChange={(e) => setImageUrlInput(e.target.value)}
+        placeholder="粘贴图片 URL（https://...）"
+        className="min-w-0 flex-1 rounded-xl border border-gray-200/70 bg-white px-3 py-2 text-sm text-gray-800 outline-none transition focus:border-blue-300 focus:ring-1 focus:ring-blue-300/40 dark:border-white/[0.08] dark:bg-white/[0.06] dark:text-gray-100 dark:focus:border-blue-500/50 dark:focus:ring-blue-500/30"
+        disabled={addingImageUrl}
+      />
+      <div className="flex gap-2">
+        <button
+          type="submit"
+          disabled={addingImageUrl || atImageLimit}
+          className="flex-1 rounded-xl bg-blue-500 px-3 py-2 text-sm font-medium text-white transition hover:bg-blue-600 disabled:cursor-not-allowed disabled:bg-gray-300 dark:disabled:bg-white/[0.06] sm:flex-none"
+        >
+          {addingImageUrl ? '添加中' : '添加'}
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            setShowImageUrlInput(false)
+            setImageUrlInput('')
+          }}
+          className="rounded-xl border border-gray-200/70 px-3 py-2 text-sm text-gray-500 transition hover:bg-gray-100 dark:border-white/[0.08] dark:text-gray-300 dark:hover:bg-white/[0.06]"
+        >
+          取消
+        </button>
+      </div>
+    </form>
+  )
+
   const renderParams = (cols: string) => (
     <InputParamsPanel
       cols={cols}
@@ -1997,6 +2081,8 @@ export default function InputBar() {
             )
           )}
 
+          {showImageUrlInput && renderImageUrlInput()}
+
           {/* 输入框 */}
           <div className="relative grid">
             {showAtImageMenu && (
@@ -2101,6 +2187,31 @@ export default function InputBar() {
               {renderParams('grid-cols-6')}
 
               <div className="flex gap-2 flex-shrink-0 mb-0.5">
+                <div
+                  className="relative"
+                  onMouseEnter={() => setUrlHover(true)}
+                  onMouseLeave={() => setUrlHover(false)}
+                >
+                  <ButtonTooltip visible={urlHover} text={atImageLimit ? `参考图数量已达上限（${API_MAX_IMAGES} 张），无法继续添加` : '从 URL 添加参考图'} />
+                  <button
+                    type="button"
+                    onClick={() => !atImageLimit && setShowImageUrlInput((value) => !value)}
+                    className={`p-2.5 rounded-xl transition-all shadow-sm ${
+                      atImageLimit
+                        ? 'bg-gray-200 dark:bg-white/[0.04] text-gray-300 dark:text-gray-500 cursor-not-allowed'
+                        : showImageUrlInput
+                        ? 'bg-blue-50 text-blue-500 ring-1 ring-blue-200 dark:bg-blue-500/10 dark:text-blue-300 dark:ring-blue-500/30'
+                        : 'bg-gray-200 dark:bg-white/[0.06] hover:bg-gray-300 dark:hover:bg-white/[0.1] text-gray-500 dark:text-gray-300 hover:shadow'
+                    }`}
+                    aria-label="从 URL 添加参考图"
+                    title="从 URL 添加参考图"
+                  >
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.5 10.5l-3 3m-2.25-1.25l-1 1a3 3 0 104.25 4.25l1-1m3.25-9.75l1-1A3 3 0 1012.5 1.5l-1 1" />
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.5 15.5l7-7" />
+                    </svg>
+                  </button>
+                </div>
                 <div
                   className="relative"
                   onMouseEnter={() => setAttachHover(true)}
@@ -2223,6 +2334,19 @@ export default function InputBar() {
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
                           </svg>
                           上传图片
+                        </button>
+                        <button
+                          className="w-full px-4 py-3 text-left text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700/50 flex items-center gap-2 transition-colors"
+                          onClick={() => {
+                            setShowMobileUploadMenu(false)
+                            setShowImageUrlInput(true)
+                          }}
+                        >
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.5 10.5l-3 3m-2.25-1.25l-1 1a3 3 0 104.25 4.25l1-1m3.25-9.75l1-1A3 3 0 1012.5 1.5l-1 1" />
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.5 15.5l7-7" />
+                          </svg>
+                          图片 URL
                         </button>
                       </div>
                     </>

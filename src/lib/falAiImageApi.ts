@@ -57,7 +57,7 @@ async function createFalRequestInput(opts: CallApiOptions): Promise<Record<strin
   }
 
   if (isEdit) {
-    input.image_urls = opts.inputImageDataUrls
+    input.image_urls = opts.inputImageUrls?.length === opts.inputImageDataUrls.length ? opts.inputImageUrls : opts.inputImageDataUrls
   }
 
   if (opts.maskDataUrl) {
