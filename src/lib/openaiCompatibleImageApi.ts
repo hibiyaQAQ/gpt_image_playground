@@ -739,7 +739,10 @@ function resolveTemplateValue(value: unknown, context: Record<string, unknown>):
 
 function templateUsesInputImageUrls(value: unknown): boolean {
   if (typeof value === 'string') {
-    return value === '$inputImages.urls' || value === '$inputImages.imageUrlObjects'
+    return value === '$inputImages.urls' ||
+      value === '$inputImages.urlsJson' ||
+      value === '$inputImages.imageUrlObjects' ||
+      value === '$inputImages.imageUrlObjectsJson'
   }
   if (Array.isArray(value)) return value.some(templateUsesInputImageUrls)
   if (value && typeof value === 'object') {
@@ -760,8 +763,12 @@ function createCustomProviderContext(opts: CallApiOptions, profile: ApiProfile) 
     inputImages: {
       dataUrls: opts.inputImageDataUrls.length ? opts.inputImageDataUrls : undefined,
       urls: hasCompleteInputImageUrls && inputImageUrls.length ? inputImageUrls : undefined,
+      urlsJson: hasCompleteInputImageUrls && inputImageUrls.length ? JSON.stringify(inputImageUrls) : undefined,
       imageUrlObjects: hasCompleteInputImageUrls && inputImageUrls.length
         ? inputImageUrls.map((url) => ({ image_url: url }))
+        : undefined,
+      imageUrlObjectsJson: hasCompleteInputImageUrls && inputImageUrls.length
+        ? JSON.stringify(inputImageUrls.map((url) => ({ image_url: url })))
         : undefined,
       count: opts.inputImageDataUrls.length,
     },

@@ -54,7 +54,7 @@ describe('default API URL env', () => {
         path: 'images/edits',
         contentType: 'json',
         body: {
-          images: '$inputImages.imageUrlObjects',
+          images: '$inputImages.imageUrlObjectsJson',
           prompt: '$prompt',
           model: '$profile.model',
         },
@@ -82,6 +82,35 @@ describe('default API URL env', () => {
     expect(settings.profiles.find((profile) => profile.id === DEFAULT_URL_IMAGE_PROFILE_ID)).toMatchObject({
       provider: DEFAULT_URL_IMAGE_PROVIDER_ID,
       baseUrl: DEFAULT_URL_IMAGE_BASE_URL,
+    })
+  })
+
+  it('upgrades older URL-only image provider body templates', () => {
+    const settings = ensureDefaultUrlImageSettings({
+      customProviders: [{
+        id: DEFAULT_URL_IMAGE_PROVIDER_ID,
+        name: 'URL 图生图',
+        template: 'http-image',
+        submit: {
+          path: 'images/edits',
+          method: 'POST',
+          contentType: 'json',
+          body: {
+            images: '$inputImages.imageUrlObjects',
+            prompt: '$prompt',
+            model: '$profile.model',
+          },
+          result: { b64JsonPaths: ['data.*.b64_json'] },
+        },
+      }],
+      profiles: [createDefaultOpenAIProfile()],
+    })
+
+    const provider = settings.customProviders.find((provider) => provider.id === DEFAULT_URL_IMAGE_PROVIDER_ID)
+    expect(provider?.submit.body).toMatchObject({
+      images: '$inputImages.imageUrlObjectsJson',
+      prompt: '$prompt',
+      model: '$profile.model',
     })
   })
 

@@ -1,6 +1,15 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_PARAMS } from '../types'
-import { DEFAULT_SETTINGS } from './apiProfiles'
+import {
+  DEFAULT_SETTINGS,
+  DEFAULT_URL_IMAGE_PROFILE_ID,
+  DEFAULT_URL_IMAGE_PROVIDER_ID,
+  createDefaultOpenAIProfile,
+  createDefaultUrlImageProfile,
+  createDefaultUrlImageProvider,
+  getActiveApiProfile,
+  getCustomProviderDefinition,
+} from './apiProfiles'
 import { callImageApi } from './api'
 
 describe('callImageApi', () => {
@@ -734,6 +743,42 @@ describe('callImageApi', () => {
       prompt: 'prompt',
       images: [{ image_url: 'https://cdn.example.com/ref.png' }],
       n: 1,
+    })
+  })
+
+  it('renders built-in URL image edits images as a JSON string', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(JSON.stringify({
+      data: [{ b64_json: 'aW1hZ2U=' }],
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+
+    const settings = {
+      ...DEFAULT_SETTINGS,
+      customProviders: [createDefaultUrlImageProvider()],
+      profiles: [createDefaultOpenAIProfile(), createDefaultUrlImageProfile()],
+      activeProfileId: DEFAULT_URL_IMAGE_PROFILE_ID,
+    }
+
+    const activeProfile = getActiveApiProfile(settings)
+    expect(activeProfile.provider).toBe(DEFAULT_URL_IMAGE_PROVIDER_ID)
+    expect(getCustomProviderDefinition(settings, activeProfile.provider)).toBeTruthy()
+
+    await callImageApi({
+      settings,
+      prompt: 'prompt',
+      params: { ...DEFAULT_PARAMS },
+      inputImageDataUrls: ['/api/image-proxy?url=https%3A%2F%2Fcdn.example.com%2Fref.png'],
+      inputImageUrls: ['https://cdn.example.com/ref.png'],
+    })
+
+    expect(fetchMock.mock.calls[0][0]).toBe('https://image.jhj.codes/v1/images/edits')
+    const [, init] = fetchMock.mock.calls[0]
+    const body = JSON.parse(String((init as RequestInit).body))
+    expect(body).toMatchObject({
+      prompt: 'prompt',
+      images: JSON.stringify([{ image_url: 'https://cdn.example.com/ref.png' }]),
     })
   })
 

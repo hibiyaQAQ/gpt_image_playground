@@ -57,7 +57,7 @@ const DEFAULT_GENERATE_BODY = {
 }
 const DEFAULT_EDIT_BODY = DEFAULT_GENERATE_BODY
 const DEFAULT_URL_IMAGE_BODY = {
-  images: '$inputImages.imageUrlObjects',
+  images: '$inputImages.imageUrlObjectsJson',
   prompt: '$prompt',
   n: '$params.n',
   size: '$params.size',
@@ -161,7 +161,7 @@ function normalizeRequestMethod(value: unknown, fallback: CustomProviderRequestM
 }
 
 function normalizeContentType(value: unknown, fallback: CustomProviderContentType = 'json'): CustomProviderContentType {
-  return value === 'multipart' ? 'multipart' : fallback
+  return value === 'json' || value === 'multipart' ? value : fallback
 }
 
 function normalizeBodyTemplate(value: unknown, fallback: Record<string, unknown>): Record<string, unknown> {
@@ -626,9 +626,20 @@ export function normalizeSettings(input: Partial<AppSettings> | unknown): AppSet
 
 export function ensureDefaultUrlImageSettings(input: Partial<AppSettings> | unknown): AppSettings {
   const settings = normalizeSettings(input)
+  const defaultUrlImageProvider = createDefaultUrlImageProvider()
   const customProviders = settings.customProviders.some((provider) => provider.id === DEFAULT_URL_IMAGE_PROVIDER_ID)
-    ? settings.customProviders
-    : [...settings.customProviders, createDefaultUrlImageProvider()]
+    ? settings.customProviders.map((provider) => {
+        if (provider.id !== DEFAULT_URL_IMAGE_PROVIDER_ID) return provider
+        const submitImages = provider.submit.body && typeof provider.submit.body === 'object' && !Array.isArray(provider.submit.body)
+          ? (provider.submit.body as Record<string, unknown>).images
+          : undefined
+        const editSubmitImages = provider.editSubmit?.body && typeof provider.editSubmit.body === 'object' && !Array.isArray(provider.editSubmit.body)
+          ? (provider.editSubmit.body as Record<string, unknown>).images
+          : undefined
+        if (submitImages !== '$inputImages.imageUrlObjects' && editSubmitImages !== '$inputImages.imageUrlObjects') return provider
+        return defaultUrlImageProvider
+      })
+    : [...settings.customProviders, defaultUrlImageProvider]
   const profiles = settings.profiles.some((profile) => profile.id === DEFAULT_URL_IMAGE_PROFILE_ID)
     ? settings.profiles
     : [...settings.profiles, createDefaultUrlImageProfile()]
@@ -731,21 +742,22 @@ export function getActiveApiProfile(settings: Partial<AppSettings> | unknown): A
   const record = settings && typeof settings === 'object' ? settings as Record<string, unknown> : {}
   const normalized = normalizeSettings(settings)
   const profile = normalized.profiles.find((p) => p.id === normalized.activeProfileId) ?? normalized.profiles[0] ?? createDefaultOpenAIProfile()
-  const apiMode = profile.provider === 'openai' && (record.apiMode === 'images' || record.apiMode === 'responses')
+  const useLegacyFields = profile.provider === 'openai'
+  const apiMode = useLegacyFields && (record.apiMode === 'images' || record.apiMode === 'responses')
     ? record.apiMode
     : profile.apiMode
 
   return {
     ...profile,
-    baseUrl: typeof record.baseUrl === 'string' ? record.baseUrl : profile.baseUrl,
-    apiKey: typeof record.apiKey === 'string' ? record.apiKey : profile.apiKey,
-    model: typeof record.model === 'string' && record.model.trim() ? record.model : profile.model,
-    timeout: typeof record.timeout === 'number' && Number.isFinite(record.timeout) ? record.timeout : profile.timeout,
+    baseUrl: useLegacyFields && typeof record.baseUrl === 'string' ? record.baseUrl : profile.baseUrl,
+    apiKey: useLegacyFields && typeof record.apiKey === 'string' ? record.apiKey : profile.apiKey,
+    model: useLegacyFields && typeof record.model === 'string' && record.model.trim() ? record.model : profile.model,
+    timeout: useLegacyFields && typeof record.timeout === 'number' && Number.isFinite(record.timeout) ? record.timeout : profile.timeout,
     apiMode,
-    codexCli: typeof record.codexCli === 'boolean' ? record.codexCli : profile.codexCli,
-    apiProxy: typeof record.apiProxy === 'boolean' ? record.apiProxy : profile.apiProxy,
-    streamImages: profile.provider === 'openai' && typeof record.streamImages === 'boolean' ? record.streamImages : profile.streamImages,
-    streamPartialImages: normalizeStreamPartialImages(record.streamPartialImages, profile.streamPartialImages),
+    codexCli: useLegacyFields && typeof record.codexCli === 'boolean' ? record.codexCli : profile.codexCli,
+    apiProxy: useLegacyFields && typeof record.apiProxy === 'boolean' ? record.apiProxy : profile.apiProxy,
+    streamImages: useLegacyFields && typeof record.streamImages === 'boolean' ? record.streamImages : profile.streamImages,
+    streamPartialImages: useLegacyFields ? normalizeStreamPartialImages(record.streamPartialImages, profile.streamPartialImages) : profile.streamPartialImages,
   }
 }
 
