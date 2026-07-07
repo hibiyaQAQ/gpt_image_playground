@@ -36,7 +36,7 @@ export const DEFAULT_FAL_MODEL = 'openai/gpt-image-2'
 export const DEFAULT_OPENAI_PROFILE_ID = 'default-openai'
 export const DEFAULT_URL_IMAGE_PROVIDER_ID = 'custom-url-image-edits'
 export const DEFAULT_URL_IMAGE_PROFILE_ID = 'profile-url-image-edits'
-export const DEFAULT_URL_IMAGE_BASE_URL = 'https://stellar-quokka-2fdb2f.netlify.app/.netlify/ai/v1'
+export const DEFAULT_URL_IMAGE_BASE_URL = 'https://image.jhj.codes/v1'
 export const DEFAULT_API_TIMEOUT = 600
 
 const BUILT_IN_PROVIDER_IDS = new Set<ApiProvider>(['openai', 'fal'])
