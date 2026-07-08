@@ -21,6 +21,7 @@ import {
 } from './imageApiShared'
 
 const PROMPT_REWRITE_GUARD_PREFIX = 'Use the following text as the complete prompt. Do not rewrite it:'
+const MAX_CUSTOM_RESULT_EXTRACTION_RETRIES = 3
 
 function getStreamPartialImages(profile: ApiProfile): number {
   return profile.streamPartialImages ?? DEFAULT_STREAM_PARTIAL_IMAGES
@@ -674,10 +675,10 @@ async function callImagesApiSingle(opts: CallApiOptions, profile: ApiProfile): P
     }
 
     if (profile.streamImages && isEventStreamResponse(response)) {
-      return parseImagesApiStreamResponse(response, mime, opts.onPartialImage)
+      return await parseImagesApiStreamResponse(response, mime, opts.onPartialImage)
     }
 
-    return parseImagesApiResponse(await response.json() as ImageApiResponse, mime, controller.signal)
+    return await parseImagesApiResponse(await response.json() as ImageApiResponse, mime, controller.signal)
   } finally {
     clearTimeout(timeoutId)
   }
@@ -920,6 +921,7 @@ async function pollCustomTaskResult(
   const proxyConfig = readClientDevProxyConfig()
   const requestHeaders = createRequestHeaders(profile)
   let isFirstPoll = true
+  let resultExtractionFailures = 0
 
   while (true) {
     if (isFirstPoll) {
@@ -960,7 +962,14 @@ async function pollCustomTaskResult(
       try {
         return await extractCustomImages(taskPayload, poll.result, mime, signal)
       } catch (err) {
-        if (!signal?.aborted && isRecoverablePollingError(err)) continue
+        resultExtractionFailures += 1
+        if (
+          resultExtractionFailures <= MAX_CUSTOM_RESULT_EXTRACTION_RETRIES &&
+          !signal?.aborted &&
+          isRecoverablePollingError(err)
+        ) {
+          continue
+        }
         throw err
       }
     }
@@ -975,7 +984,13 @@ export async function getCustomQueuedImageResult(
 ): Promise<CallApiResult> {
   if (!customProvider.poll) throw new Error('自定义异步任务缺少 poll 配置')
   const mime = MIME_MAP[params.output_format] || 'image/png'
-  return pollCustomTaskResult(profile, customProvider.poll, taskId, mime)
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), profile.timeout * 1000)
+  try {
+    return await pollCustomTaskResult(profile, customProvider.poll, taskId, mime, controller.signal)
+  } finally {
+    clearTimeout(timeoutId)
+  }
 }
 
 async function callCustomHttpImageApi(opts: CallApiOptions, profile: ApiProfile, customProvider: CustomProviderDefinition): Promise<CallApiResult> {
@@ -1003,14 +1018,10 @@ async function callCustomHttpImageApi(opts: CallApiOptions, profile: ApiProfile,
       ;(err as any).rawResponsePayload = JSON.stringify(submitPayload, null, 2)
       throw err
     }
-    if (!taskId) return extractCustomImages(submitPayload, submitMapping.result ?? {}, mime, controller.signal)
+    if (!taskId) return await extractCustomImages(submitPayload, submitMapping.result ?? {}, mime, controller.signal)
     if (!customProvider.poll) throw new Error('异步接口返回了 task_id，但服务商配置缺少 poll')
     opts.onCustomTaskEnqueued?.({ taskId })
-    if (timeoutId) {
-      clearTimeout(timeoutId)
-      timeoutId = null
-    }
-    return pollCustomTaskResult(profile, customProvider.poll, taskId, mime, controller.signal)
+    return await pollCustomTaskResult(profile, customProvider.poll, taskId, mime, controller.signal)
   } finally {
     if (timeoutId) clearTimeout(timeoutId)
   }
@@ -1116,7 +1127,7 @@ async function callResponsesImageApiSingle(opts: CallApiOptions, profile: ApiPro
     }
 
     if (profile.streamImages && isEventStreamResponse(response)) {
-      return parseResponsesApiStreamResponse(response, mime, opts.onPartialImage)
+      return await parseResponsesApiStreamResponse(response, mime, opts.onPartialImage)
     }
 
     const payload = await response.json() as ResponsesApiResponse

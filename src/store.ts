@@ -1330,7 +1330,7 @@ export const useStore = create<AppState>()(
               : profile,
           )
         }
-        const settings = normalizeSettings(merged)
+        const settings = ensureDefaultUrlImageSettings(merged)
         const shouldClearReusedProfile = st.reusedTaskApiProfileId && settings.activeProfileId === st.reusedTaskApiProfileId
         return {
           settings,
@@ -2014,6 +2014,10 @@ function getRawErrorPayload(err: unknown): Pick<Partial<TaskRecord>, 'rawImageUr
   }
 }
 
+function hasRawImageUrlsError(err: unknown): boolean {
+  return Boolean(getRawErrorPayload(err).rawImageUrls?.length)
+}
+
 function clearFalRecoveryTimer(taskId: string) {
   const timer = falRecoveryTimers.get(taskId)
   if (timer) clearTimeout(timer)
@@ -2179,7 +2183,7 @@ async function recoverFalTask(taskId: string) {
     await completeRecoveredFalTask(task, result)
     return
   } catch (err) {
-    if (isNetworkRecoverableError(err)) {
+    if (isNetworkRecoverableError(err) && !hasRawImageUrlsError(err)) {
       scheduleFalRecovery(taskId)
       return
     }
@@ -4924,7 +4928,7 @@ async function executeTask(taskId: string) {
       ? { requestId: latestTask.falRequestId, endpoint: latestTask.falEndpoint }
       : null)
     const latestCustomTaskInfo = customTaskInfo ?? (latestTask.customTaskId ? { taskId: latestTask.customTaskId } : null)
-    if (latestTask.apiProvider === 'fal' && latestFalRequestInfo && isNetworkRecoverableError(err)) {
+    if (latestTask.apiProvider === 'fal' && latestFalRequestInfo && isNetworkRecoverableError(err) && !hasRawImageUrlsError(err)) {
       updateTaskInStore(taskId, {
         status: 'error',
         error: '与 fal.ai 的连接已断开，之后会继续查询任务结果。',
@@ -4935,7 +4939,7 @@ async function executeTask(taskId: string) {
         elapsed: Date.now() - task.createdAt,
       })
       scheduleFalRecovery(taskId)
-    } else if (latestCustomTaskInfo && isNetworkRecoverableError(err)) {
+    } else if (latestCustomTaskInfo && isNetworkRecoverableError(err) && !hasRawImageUrlsError(err)) {
       updateTaskInStore(taskId, {
         status: 'error',
         error: '与自定义异步任务的连接已断开，之后会继续查询任务结果。',

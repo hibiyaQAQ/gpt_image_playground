@@ -54,9 +54,13 @@ describe('default API URL env', () => {
         path: 'images/edits',
         contentType: 'json',
         body: {
-          images: '$inputImages.imageUrlObjectsJson',
+          images: '$inputImages.imageUrlObjects',
           prompt: '$prompt',
           model: '$profile.model',
+        },
+        result: {
+          imageUrlPaths: [],
+          b64JsonPaths: ['data.*.b64_json'],
         },
       },
     })
@@ -85,7 +89,7 @@ describe('default API URL env', () => {
     })
   })
 
-  it('upgrades older URL-only image provider body templates', () => {
+  it('upgrades older URL-only image provider templates to match the reference project', () => {
     const settings = ensureDefaultUrlImageSettings({
       customProviders: [{
         id: DEFAULT_URL_IMAGE_PROVIDER_ID,
@@ -108,9 +112,13 @@ describe('default API URL env', () => {
 
     const provider = settings.customProviders.find((provider) => provider.id === DEFAULT_URL_IMAGE_PROVIDER_ID)
     expect(provider?.submit.body).toMatchObject({
-      images: '$inputImages.imageUrlObjectsJson',
+      images: '$inputImages.imageUrlObjects',
       prompt: '$prompt',
       model: '$profile.model',
+    })
+    expect(provider?.submit.result).toEqual({
+      imageUrlPaths: [],
+      b64JsonPaths: ['data.*.b64_json'],
     })
   })
 

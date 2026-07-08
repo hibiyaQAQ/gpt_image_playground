@@ -746,7 +746,7 @@ describe('callImageApi', () => {
     })
   })
 
-  it('renders built-in URL image edits images as a JSON string', async () => {
+  it('renders built-in URL image edits images like the reference project', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(JSON.stringify({
       data: [{ b64_json: 'aW1hZ2U=' }],
     }), {
@@ -778,8 +778,35 @@ describe('callImageApi', () => {
     const body = JSON.parse(String((init as RequestInit).body))
     expect(body).toMatchObject({
       prompt: 'prompt',
-      images: JSON.stringify([{ image_url: 'https://cdn.example.com/ref.png' }]),
+      images: [{ image_url: 'https://cdn.example.com/ref.png' }],
     })
+  })
+
+  it('does not download returned URLs for built-in URL image edits', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(JSON.stringify({
+      data: [{ url: 'https://cdn.example.com/output.png' }],
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+
+    const settings = {
+      ...DEFAULT_SETTINGS,
+      customProviders: [createDefaultUrlImageProvider()],
+      profiles: [createDefaultOpenAIProfile(), createDefaultUrlImageProfile()],
+      activeProfileId: DEFAULT_URL_IMAGE_PROFILE_ID,
+    }
+
+    await expect(callImageApi({
+      settings,
+      prompt: 'prompt',
+      params: { ...DEFAULT_PARAMS },
+      inputImageDataUrls: ['/api/image-proxy?url=https%3A%2F%2Fcdn.example.com%2Fref.png'],
+      inputImageUrls: ['https://cdn.example.com/ref.png'],
+    })).rejects.toThrow('接口没有返回可识别的图片数据')
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(String(fetchMock.mock.calls[0][0])).toBe('https://image.jhj.codes/v1/images/edits')
   })
 
   it('uses original source URLs for Responses input images', async () => {
@@ -1063,25 +1090,13 @@ describe('callImageApi', () => {
     expect(fetchMock).toHaveBeenCalledTimes(3)
   })
 
-  it('does not apply submit timeout to custom async polling after receiving a task id', async () => {
-    vi.useFakeTimers()
-    vi.spyOn(globalThis, 'fetch')
+  it('applies profile timeout to custom async polling after receiving a task id', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(new Response(JSON.stringify({ task_id: 'task-1' }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       }))
       .mockResolvedValueOnce(new Response(JSON.stringify({ data: { status: 'IN_PROGRESS' } }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({
-        data: {
-          status: 'SUCCESS',
-          data: {
-            data: [{ b64_json: 'aW1hZ2U=' }],
-          },
-        },
-      }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       }))
@@ -1121,20 +1136,96 @@ describe('callImageApi', () => {
           baseUrl: 'https://api.example.com/v1',
           apiKey: 'test-key',
           model: 'model',
-          timeout: 1,
+          timeout: 0.01,
         }],
         activeProfileId: 'profile-custom',
-        timeout: 1,
+        timeout: 0.01,
       },
       prompt: 'prompt',
       params: { ...DEFAULT_PARAMS },
       inputImageDataUrls: [],
     })
 
-    await vi.advanceTimersByTimeAsync(6000)
+    await expect(promise).rejects.toMatchObject({ name: 'AbortError' })
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
 
-    await expect(promise).resolves.toEqual({
-      images: ['data:image/png;base64,aW1hZ2U='],
+  it('stops retrying custom async result image downloads after repeated recoverable failures', async () => {
+    vi.useFakeTimers()
+    const outputUrl = 'https://cdn.example.com/output.png'
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => {
+      if (String(url).includes('/api/image-proxy')) {
+        return new Response('image proxy timeout', { status: 504 })
+      }
+      if (String(url).includes('/images/tasks/task-1')) {
+        return new Response(JSON.stringify({
+          data: {
+            status: 'SUCCESS',
+            data: {
+              data: [{ url: outputUrl }],
+            },
+          },
+        }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      return new Response(JSON.stringify({ task_id: 'task-1' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
     })
+
+    const promise = callImageApi({
+      settings: {
+        ...DEFAULT_SETTINGS,
+        baseUrl: 'https://api.example.com/v1',
+        customProviders: [{
+          id: 'custom-async',
+          name: 'Custom Async',
+          template: 'http-image',
+          submit: {
+            path: 'images/generations',
+            method: 'POST',
+            contentType: 'json',
+            query: { async: 'true' },
+            body: { model: '$profile.model', prompt: '$prompt' },
+            taskIdPath: 'task_id',
+          },
+          poll: {
+            path: 'images/tasks/{task_id}',
+            method: 'GET',
+            intervalSeconds: 5,
+            statusPath: 'data.status',
+            successValues: ['SUCCESS'],
+            failureValues: ['FAILURE'],
+            result: {
+              imageUrlPaths: ['data.data.data.*.url'],
+            },
+          },
+        }],
+        profiles: [{
+          ...DEFAULT_SETTINGS.profiles[0],
+          id: 'profile-custom',
+          provider: 'custom-async',
+          baseUrl: 'https://api.example.com/v1',
+          apiKey: 'test-key',
+          model: 'model',
+          timeout: 60,
+        }],
+        activeProfileId: 'profile-custom',
+      },
+      prompt: 'prompt',
+      params: { ...DEFAULT_PARAMS },
+      inputImageDataUrls: [],
+    })
+
+    const expectedError = promise.catch((caught) => caught)
+    await vi.advanceTimersByTimeAsync(20_000)
+
+    const err = await expectedError
+    expect(err).toBeInstanceOf(Error)
+    expect(err.rawImageUrls).toEqual([outputUrl])
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).includes('/api/image-proxy'))).toHaveLength(4)
   })
 })

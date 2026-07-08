@@ -57,7 +57,7 @@ const DEFAULT_GENERATE_BODY = {
 }
 const DEFAULT_EDIT_BODY = DEFAULT_GENERATE_BODY
 const DEFAULT_URL_IMAGE_BODY = {
-  images: '$inputImages.imageUrlObjectsJson',
+  images: '$inputImages.imageUrlObjects',
   prompt: '$prompt',
   n: '$params.n',
   size: '$params.size',
@@ -70,6 +70,10 @@ const DEFAULT_URL_IMAGE_BODY = {
 }
 const DEFAULT_OPENAI_RESULT: CustomProviderResultMapping = {
   imageUrlPaths: ['data.*.url'],
+  b64JsonPaths: ['data.*.b64_json'],
+}
+const DEFAULT_B64_JSON_RESULT: CustomProviderResultMapping = {
+  imageUrlPaths: [],
   b64JsonPaths: ['data.*.b64_json'],
 }
 const DEFAULT_EDIT_FILES: CustomProviderFileMapping[] = [
@@ -379,14 +383,14 @@ export function createDefaultUrlImageProvider(): CustomProviderDefinition {
       method: 'POST',
       contentType: 'json',
       body: DEFAULT_URL_IMAGE_BODY,
-      result: DEFAULT_OPENAI_RESULT,
+      result: DEFAULT_B64_JSON_RESULT,
     },
     editSubmit: {
       path: 'images/edits',
       method: 'POST',
       contentType: 'json',
       body: DEFAULT_URL_IMAGE_BODY,
-      result: DEFAULT_OPENAI_RESULT,
+      result: DEFAULT_B64_JSON_RESULT,
     },
   }
 }
@@ -636,7 +640,16 @@ export function ensureDefaultUrlImageSettings(input: Partial<AppSettings> | unkn
         const editSubmitImages = provider.editSubmit?.body && typeof provider.editSubmit.body === 'object' && !Array.isArray(provider.editSubmit.body)
           ? (provider.editSubmit.body as Record<string, unknown>).images
           : undefined
-        if (submitImages !== '$inputImages.imageUrlObjects' && editSubmitImages !== '$inputImages.imageUrlObjects') return provider
+        const submitImageUrls = provider.submit.result?.imageUrlPaths ?? []
+        const editSubmitImageUrls = provider.editSubmit?.result?.imageUrlPaths ?? []
+        if (
+          submitImages === '$inputImages.imageUrlObjects' &&
+          (editSubmitImages === undefined || editSubmitImages === '$inputImages.imageUrlObjects') &&
+          submitImageUrls.length === 0 &&
+          editSubmitImageUrls.length === 0
+        ) {
+          return provider
+        }
         return defaultUrlImageProvider
       })
     : [...settings.customProviders, defaultUrlImageProvider]
