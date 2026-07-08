@@ -3,6 +3,7 @@ import react from '@vitejs/plugin-react'
 import { readFileSync } from 'fs'
 import { normalizeDevProxyConfig } from './src/lib/devProxy'
 import { handleImageProxyRequest, IMAGE_PROXY_PATH } from './server/imageProxy.mjs'
+import { handleUrlImageGenerateRequest, URL_IMAGE_GENERATE_PATH } from './server/urlImageGenerateProxy.mjs'
 
 const pkg = JSON.parse(readFileSync('./package.json', 'utf-8'))
 
@@ -45,11 +46,43 @@ function imageProxyPlugin() {
   }
 }
 
+function readRequestBody(req: import('node:http').IncomingMessage): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = []
+    req.on('data', (chunk) => chunks.push(Buffer.from(chunk)))
+    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf-8')))
+    req.on('error', reject)
+  })
+}
+
+function urlImageGeneratePlugin() {
+  return {
+    name: 'url-image-generate',
+    configureServer(server) {
+      server.middlewares.use(async (req, res, next) => {
+        const requestUrl = new URL(req.url || '/', 'http://localhost')
+        if (requestUrl.pathname !== URL_IMAGE_GENERATE_PATH) {
+          next()
+          return
+        }
+
+        const body = req.method === 'POST' ? await readRequestBody(req) : ''
+        const response = req.method === 'OPTIONS'
+          ? { statusCode: 204, headers: { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'Content-Type, Authorization', 'Access-Control-Allow-Methods': 'POST, OPTIONS' }, body: '' }
+          : await handleUrlImageGenerateRequest(body)
+        res.statusCode = response.statusCode
+        Object.entries(response.headers).forEach(([key, value]) => res.setHeader(key, value))
+        res.end(response.body)
+      })
+    },
+  }
+}
+
 export default defineConfig(({ command }) => {
   const devProxyConfig = command === 'serve' ? loadDevProxyConfig() : null
 
   return {
-    plugins: [imageProxyPlugin(), react()],
+    plugins: [imageProxyPlugin(), urlImageGeneratePlugin(), react()],
     base: './',
     define: {
       __APP_VERSION__: JSON.stringify(pkg.version),

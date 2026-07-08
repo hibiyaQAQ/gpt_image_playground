@@ -773,12 +773,20 @@ describe('callImageApi', () => {
       inputImageUrls: ['https://cdn.example.com/ref.png'],
     })
 
-    expect(fetchMock.mock.calls[0][0]).toBe('https://image.jhj.codes/v1/images/edits')
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/generate')
     const [, init] = fetchMock.mock.calls[0]
     const body = JSON.parse(String((init as RequestInit).body))
     expect(body).toMatchObject({
-      prompt: 'prompt',
-      images: [{ image_url: 'https://cdn.example.com/ref.png' }],
+      provider: 'custom',
+      apiBaseUrl: 'https://image.jhj.codes/v1',
+      endpointPath: 'images/edits',
+      authMode: 'bearer',
+      timeoutSeconds: 600,
+      request: {
+        prompt: 'prompt',
+        model: 'gpt-image-2',
+        images: [{ image_url: 'https://cdn.example.com/ref.png' }],
+      },
     })
   })
 
@@ -806,7 +814,7 @@ describe('callImageApi', () => {
     })).rejects.toThrow('接口没有返回可识别的图片数据')
 
     expect(fetchMock).toHaveBeenCalledTimes(1)
-    expect(String(fetchMock.mock.calls[0][0])).toBe('https://image.jhj.codes/v1/images/edits')
+    expect(String(fetchMock.mock.calls[0][0])).toBe('/api/generate')
   })
 
   it('uses original source URLs for Responses input images', async () => {

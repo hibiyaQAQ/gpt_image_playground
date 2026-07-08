@@ -1,7 +1,11 @@
 const IMAGE_PROXY_PATH = '/api/image-proxy'
+const URL_IMAGE_GENERATE_PATH = '/api/generate'
 const DEFAULT_MAX_BYTES = 20 * 1024 * 1024
 const DEFAULT_TIMEOUT_MS = 10_000
 const DEFAULT_MAX_REDIRECTS = 3
+const MIN_IMAGE_API_TIMEOUT_MS = 5000
+const DEFAULT_IMAGE_API_TIMEOUT_MS = 110000
+const MAX_IMAGE_API_TIMEOUT_MS = 900000
 const ALLOWED_IMAGE_TYPES = new Set([
   'image/png',
   'image/jpeg',
@@ -130,6 +134,161 @@ function createJsonResponse(status, message) {
   })
 }
 
+function createGenerateJsonResponse(status, body, headers = {}) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Cache-Control': 'no-store',
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+      'Access-Control-Allow-Methods': 'POST, OPTIONS',
+      ...headers,
+    },
+  })
+}
+
+function trimSlashEnd(value) {
+  return value.replace(/\/+$/, '')
+}
+
+function normalizeTargetUrl(apiBaseUrl, endpointPath) {
+  if (!apiBaseUrl || typeof apiBaseUrl !== 'string') {
+    throw new Error('Base URL 不能为空')
+  }
+
+  const endpoint = String(endpointPath || '').trim()
+  const baseUrl = new URL(apiBaseUrl.trim())
+  if (baseUrl.protocol !== 'http:' && baseUrl.protocol !== 'https:') {
+    throw new Error('Base URL 只支持 http 或 https')
+  }
+
+  if (!endpoint) return baseUrl.toString()
+
+  const cleanEndpoint = `/${endpoint.replace(/^\/+/, '')}`
+  const currentPath = trimSlashEnd(baseUrl.pathname)
+  if (currentPath.endsWith(trimSlashEnd(cleanEndpoint))) return baseUrl.toString()
+
+  const baseWithSlash = baseUrl.toString().endsWith('/') ? baseUrl.toString() : `${baseUrl.toString()}/`
+  return new URL(cleanEndpoint.slice(1), baseWithSlash).toString()
+}
+
+function buildAuthHeaders(authMode, apiKey, customHeaderName) {
+  const headers = {}
+  const key = String(apiKey || '')
+  const mode = String(authMode || 'bearer')
+
+  if (mode === 'none' || !key) return headers
+
+  if (mode === 'bearer') {
+    headers.Authorization = key.toLowerCase().startsWith('bearer ') ? key : `Bearer ${key}`
+    return headers
+  }
+
+  if (mode === 'x-api-key') {
+    headers['x-api-key'] = key
+    return headers
+  }
+
+  if (mode === 'custom') {
+    const headerName = String(customHeaderName || '').trim()
+    if (!/^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/.test(headerName)) {
+      throw new Error('自定义 Header 名称不合法')
+    }
+    headers[headerName] = key
+  }
+
+  return headers
+}
+
+function validateGenerateRequestBody(request) {
+  if (!request || typeof request !== 'object' || Array.isArray(request)) {
+    throw new Error('请求体不能为空')
+  }
+  if (!Array.isArray(request.images) || request.images.length === 0) {
+    throw new Error('images 至少需要一项')
+  }
+  if (typeof request.prompt !== 'string' || request.prompt.trim() === '') {
+    throw new Error('prompt 不能为空')
+  }
+  if (typeof request.model !== 'string' || request.model.trim() === '') {
+    throw new Error('model 不能为空')
+  }
+
+  for (const image of request.images) {
+    if (!image || typeof image !== 'object' || typeof image.image_url !== 'string') {
+      throw new Error('images 每一项都需要 image_url')
+    }
+  }
+}
+
+function normalizeImageApiTimeoutMs(timeoutSeconds, env) {
+  const requestedMs = Number(timeoutSeconds) * 1000
+  const fallbackMs = Number.isFinite(Number(env.IMAGE_API_TIMEOUT_MS)) ? Number(env.IMAGE_API_TIMEOUT_MS) : DEFAULT_IMAGE_API_TIMEOUT_MS
+  const maxMs = Number.isFinite(Number(env.IMAGE_API_MAX_TIMEOUT_MS)) ? Number(env.IMAGE_API_MAX_TIMEOUT_MS) : MAX_IMAGE_API_TIMEOUT_MS
+  const timeoutMs = Number.isFinite(requestedMs) && requestedMs > 0 ? requestedMs : fallbackMs
+  return Math.min(Math.max(Math.round(timeoutMs), MIN_IMAGE_API_TIMEOUT_MS), maxMs)
+}
+
+async function handleUrlImageGenerateRequest(request, env) {
+  if (request.method === 'OPTIONS') return createGenerateJsonResponse(204, {})
+  if (request.method !== 'POST') return createGenerateJsonResponse(405, { error: '只支持 POST 请求' })
+
+  let payload
+  try {
+    payload = await request.json()
+    validateGenerateRequestBody(payload.request)
+  } catch (error) {
+    return createGenerateJsonResponse(400, { error: error.message || '请求参数错误' })
+  }
+
+  const timeoutMs = normalizeImageApiTimeoutMs(payload.timeoutSeconds, env)
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), timeoutMs)
+
+  try {
+    const targetUrl = normalizeTargetUrl(payload.apiBaseUrl, payload.endpointPath)
+    const response = await fetch(targetUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...buildAuthHeaders(payload.authMode, payload.apiKey, payload.customHeaderName),
+      },
+      body: JSON.stringify(payload.request),
+      signal: controller.signal,
+    })
+
+    const contentType = response.headers.get('content-type') || ''
+    const raw = await response.text()
+    const data = contentType.includes('application/json')
+      ? raw ? JSON.parse(raw) : {}
+      : { raw }
+
+    if (!response.ok) {
+      let message =
+        data?.error?.message ||
+        (typeof data?.error === 'string' ? data.error : null) ||
+        data?.message ||
+        '上游未返回错误描述'
+      if (typeof message !== 'string') message = JSON.stringify(message)
+      return createGenerateJsonResponse(response.status, {
+        error: `上游接口 HTTP ${response.status}：${message}`,
+        status: response.status,
+        upstream: data,
+      })
+    }
+
+    return createGenerateJsonResponse(200, data)
+  } catch (error) {
+    const message = error.name === 'AbortError'
+      ? `上游接口请求超时（${Math.round(timeoutMs / 1000)} 秒）`
+      : error.message
+    return createGenerateJsonResponse(500, { error: message })
+  } finally {
+    clearTimeout(timeout)
+  }
+}
+
 function isRedirectResponse(response) {
   return [301, 302, 303, 307, 308].includes(response.status)
 }
@@ -248,6 +407,7 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url)
     if (url.pathname === IMAGE_PROXY_PATH) return handleImageProxyRequest(request, env)
+    if (url.pathname === URL_IMAGE_GENERATE_PATH) return handleUrlImageGenerateRequest(request, env)
     return env.ASSETS.fetch(request)
   },
 }

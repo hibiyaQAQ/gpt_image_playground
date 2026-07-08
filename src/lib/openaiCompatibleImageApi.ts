@@ -1,4 +1,5 @@
 import { DEFAULT_STREAM_PARTIAL_IMAGES, type ApiProfile, type CustomProviderDefinition, type CustomProviderPollMapping, type CustomProviderResultMapping, type CustomProviderSubmitMapping, type ImageApiResponse, type ImageResponseItem, type ResponsesApiResponse, type ResponsesOutputItem, type TaskParams } from '../types'
+import { DEFAULT_URL_IMAGE_PROVIDER_ID } from './apiProfiles'
 import { dataUrlToBlob, imageDataUrlToPngBlob, maskDataUrlToPngBlob } from './canvasImage'
 import { buildApiUrl, readClientDevProxyConfig, shouldUseApiProxy } from './devProxy'
 import {
@@ -22,6 +23,8 @@ import {
 
 const PROMPT_REWRITE_GUARD_PREFIX = 'Use the following text as the complete prompt. Do not rewrite it:'
 const MAX_CUSTOM_RESULT_EXTRACTION_RETRIES = 3
+const URL_IMAGE_GENERATE_PATH = '/api/generate'
+const URL_IMAGE_CLIENT_TIMEOUT_PADDING_MS = 5000
 
 function getStreamPartialImages(profile: ApiProfile): number {
   return profile.streamPartialImages ?? DEFAULT_STREAM_PARTIAL_IMAGES
@@ -479,6 +482,9 @@ async function parseResponsesApiStreamResponse(
 }
 
 export async function callOpenAICompatibleImageApi(opts: CallApiOptions, profile: ApiProfile, customProvider?: CustomProviderDefinition | null): Promise<CallApiResult> {
+  if (customProvider?.id === DEFAULT_URL_IMAGE_PROVIDER_ID) {
+    return callBuiltInUrlImageGenerateApi(opts, profile)
+  }
   if (customProvider) {
     return callCustomHttpImageApi(opts, profile, customProvider)
   }
@@ -486,6 +492,94 @@ export async function callOpenAICompatibleImageApi(opts: CallApiOptions, profile
   return profile.apiMode === 'responses'
     ? callResponsesImageApi(opts, profile)
     : callImagesApi(opts, profile)
+}
+
+function createUrlImageProxyRequest(opts: CallApiOptions, profile: ApiProfile): Record<string, unknown> {
+  const inputImageUrls = opts.inputImageUrls?.length === opts.inputImageDataUrls.length
+    ? opts.inputImageUrls.filter(isHttpUrl)
+    : []
+  if (inputImageUrls.length !== opts.inputImageDataUrls.length) {
+    throw new Error('当前服务商需要参考图 HTTP URL，但部分参考图没有可供 API 访问的原始 URL。请使用网页图片右键加入参考图，或使用服务商返回原始图片 URL 的生成结果。')
+  }
+
+  const request: Record<string, unknown> = {
+    images: inputImageUrls.map((url) => ({ image_url: url })),
+    prompt: opts.prompt,
+    n: opts.params.n,
+    size: opts.params.size,
+    model: profile.model,
+    quality: opts.params.quality,
+    output_format: opts.params.output_format,
+    moderation: opts.params.moderation,
+  }
+
+  if (opts.params.output_format !== 'png' && opts.params.output_compression != null) {
+    request.output_compression = opts.params.output_compression
+  }
+
+  return request
+}
+
+function parseB64OnlyImagesApiResponse(payload: ImageApiResponse, mime: string): CallApiResult {
+  const data = payload.data
+  if (!Array.isArray(data) || !data.length) {
+    const err = new Error('接口没有返回图片数据')
+    ;(err as any).rawResponsePayload = JSON.stringify(payload, null, 2)
+    throw err
+  }
+
+  const images: string[] = []
+  const revisedPrompts: Array<string | undefined> = []
+  for (const item of data) {
+    if (!item.b64_json) continue
+    images.push(normalizeBase64Image(item.b64_json, mime))
+    revisedPrompts.push(typeof item.revised_prompt === 'string' ? item.revised_prompt : undefined)
+  }
+
+  if (!images.length) {
+    const err = new Error('接口没有返回可识别的图片数据，请确认 URL 图生图接口返回 data[].b64_json。')
+    ;(err as any).rawResponsePayload = JSON.stringify(payload, null, 2)
+    throw err
+  }
+
+  const actualParams = mergeActualParams(pickActualParams(payload))
+  return {
+    images,
+    actualParams,
+    actualParamsList: images.map(() => actualParams),
+    revisedPrompts,
+  }
+}
+
+async function callBuiltInUrlImageGenerateApi(opts: CallApiOptions, profile: ApiProfile): Promise<CallApiResult> {
+  const mime = MIME_MAP[opts.params.output_format] || 'image/png'
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), profile.timeout * 1000 + URL_IMAGE_CLIENT_TIMEOUT_PADDING_MS)
+
+  try {
+    const response = await fetch(URL_IMAGE_GENERATE_PATH, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      cache: 'no-store',
+      body: JSON.stringify({
+        provider: 'custom',
+        apiBaseUrl: profile.baseUrl,
+        endpointPath: 'images/edits',
+        apiKey: profile.apiKey,
+        authMode: 'bearer',
+        timeoutSeconds: profile.timeout,
+        request: createUrlImageProxyRequest(opts, profile),
+      }),
+      signal: controller.signal,
+    })
+
+    if (!response.ok) throw new Error(await getApiErrorMessage(response))
+    return parseB64OnlyImagesApiResponse(await response.json() as ImageApiResponse, mime)
+  } finally {
+    clearTimeout(timeoutId)
+  }
 }
 
 async function callImagesApi(opts: CallApiOptions, profile: ApiProfile): Promise<CallApiResult> {
